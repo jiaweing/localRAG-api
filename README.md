@@ -1,23 +1,33 @@
-# Local RAG API Server
+# Local Contextual RAG API Server
 
-A lightweight API server for Retrieval-Augmented Generation (RAG) operations, supporting document chunking, embedding generation, and semantic search with reranking.
+A lightweight API server for Contextual Retrieval-Augmented Generation (RAG) operations, supporting document chunking with context generation, multi-embedding semantic search, and reranking.
 
 ## Overview
 
-This service provides endpoints for implementing RAG workflows:
+This service provides endpoints for implementing contextual RAG workflows:
 
-1. Chunk documents and generate embeddings
-2. Query chunks using semantic search and cross-encoder reranking
-3. Local model management for embeddings and reranking
+1. Chunk documents and generate embeddings with context-awareness:
+   - Split documents into chunks
+   - Generate contextual descriptions using LLM
+   - Create embeddings for both content and context
+2. Query chunks using hybrid semantic search (optional context-aware):
+   - Match against content embeddings, and context embeddings when available
+   - Flexible context generation using OpenAI or local models
+   - Weight and combine similarity scores (0.6 content, 0.4 context)
+   - Optional cross-encoder reranking
+3. Local model management for embedding, reranking, and chat models
+4. Optional OpenAI integration for enhanced context generation
 
 ## Features
 
 - 🔍 Text chunking with configurable size and overlap
-- 📈 Embedding generation for chunks and queries
-- 🎯 Semantic search using cosine similarity
+- 🧠 Optional context generation using OpenAI or local models
+- 📈 Dual embeddings support for context-aware search
+- 🎯 Hybrid semantic search with configurable weights
 - 🔄 Cross-encoder reranking for better relevance
-- 📊 Configurable number of results and reranking options
+- 📊 Highly configurable parameters for all operations
 - 🚀 Efficient model management with auto-unloading
+- 🔌 Easy OpenAI integration for enhanced context generation
 
 ## Setup
 
@@ -30,13 +40,24 @@ pnpm install
 pnpm build    # Builds to dist/ directory
 ```
 
-2. Place your GGUF models in the appropriate directories under `models/`:
+2. Configure environment:
+
+Copy `.env.example` to `.env` and adjust as needed:
+
+```bash
+# OpenAI Configuration (optional)
+OPENAI_API_KEY=your_api_key_here
+OPENAI_MODEL_NAME=gpt-4-turbo-preview # or any other OpenAI model
+```
+
+3. Place your GGUF models in the appropriate directories under `models/`:
 
 ```
 localRAG-api/
   ├── models/
   │   ├── embedding/          # Embedding models (e.g., all-MiniLM-L6-v2)
-  │   └── reranker/          # Cross-encoder reranking models (e.g., bge-reranker)
+  │   ├── reranker/          # Cross-encoder reranking models (e.g., bge-reranker)
+  │   └── chat/              # Chat models for local context generation (e.g., Llama-2)
 ```
 
 3. Run the service:
@@ -61,14 +82,16 @@ The service will start on port 23673.
 
 #### `POST /v1/chunk`
 
-Split a document into chunks and generate embeddings.
+Split a document into chunks with optional context generation and create embeddings.
 
 ```json
 {
   "text": "Your document text here...",
   "model": "all-MiniLM-L6-v2.Q4_K_M",
   "chunkSize": 500, // optional (default: 500)
-  "overlap": 50 // optional (default: 50)
+  "overlap": 50, // optional (default: 50)
+  "generateContexts": true, // optional (default: false)
+  "useOpenAI": false // optional (default: false), requires OPENAI_API_KEY
 }
 ```
 
@@ -79,12 +102,17 @@ Response:
   "chunks": [
     {
       "content": "Chunk text...",
-      "embedding": [
+      "context": "Generated contextual description...",
+      "content_embedding": [
+        /* vector */
+      ],
+      "context_embedding": [
         /* vector */
       ],
       "metadata": {
         "start_idx": 0,
-        "end_idx": 500
+        "end_idx": 500,
+        "has_context": true
       }
     }
     // ... more chunks
@@ -96,7 +124,7 @@ Response:
 
 #### `POST /v1/query`
 
-Find relevant chunks for a query using semantic search with optional reranking.
+Find relevant chunks using hybrid semantic search (content + context) with optional reranking.
 
 ```json
 {
@@ -118,10 +146,16 @@ Response:
   "results": [
     {
       "content": "Most relevant chunk...",
-      "score": 0.95,
+      "context": "Contextual description...",
       "metadata": {
         "start_idx": 0,
-        "end_idx": 500
+        "end_idx": 500,
+        "has_context": true
+      },
+      "scores": {
+        "content": 0.92, // Similarity to chunk content
+        "context": 0.85, // Similarity to chunk context
+        "combined": 0.89 // Weighted combination (0.6 content, 0.4 context)
       }
     }
     // ... more chunks ordered by relevance
@@ -200,10 +234,10 @@ Error response format:
 ### With Node.js
 
 ```typescript
-async function searchDocument(text: string, query: string) {
+async function searchDocument(text: string, query: string, useOpenAI = false) {
   const API_URL = "http://localhost:23673/v1";
 
-  // 1. Chunk document and generate embeddings
+  // 1. Chunk document, generate context, and create embeddings
   const chunkResponse = await fetch(`${API_URL}/chunk`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -212,11 +246,14 @@ async function searchDocument(text: string, query: string) {
       model: "all-MiniLM-L6-v2.Q4_K_M",
       chunkSize: 500,
       overlap: 50,
+      generateContexts: true,
+      useOpenAI,
     }),
   });
   const { chunks } = await chunkResponse.json();
+  console.log(`Generated ${chunks.length} chunks with context and embeddings`);
 
-  // 2. Query chunks
+  // 2. Query chunks using hybrid search
   const queryResponse = await fetch(`${API_URL}/query`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -229,6 +266,15 @@ async function searchDocument(text: string, query: string) {
     }),
   });
   const { results } = await queryResponse.json();
+
+  // Results include both content and context, with detailed scores
+  results.forEach((r, i) => {
+    console.log(`\nResult ${i + 1}:`);
+    console.log(`Content: ${r.content}`);
+    console.log(`Context: ${r.context}`);
+    console.log(`Scores:`, r.scores);
+  });
+
   return results;
 }
 ```
@@ -236,24 +282,54 @@ async function searchDocument(text: string, query: string) {
 ### With cURL
 
 ```bash
-# 1. Chunk document
+# 1. Chunk document with context generation
 curl -X POST http://localhost:23673/v1/chunk \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Your document text...",
-    "model": "all-MiniLM-L6-v2.Q4_K_M"
+    "model": "all-MiniLM-L6-v2.Q4_K_M",
+    "chunkSize": 500,
+    "overlap": 50
   }'
 
-# 2. Query chunks
+# 2. Query chunks with hybrid search
 curl -X POST http://localhost:23673/v1/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "Your search query",
-    "chunks": [...],  # Chunks from previous response
+    "chunks": [...],  # Chunks with content_embedding and context_embedding
     "embeddingModel": "all-MiniLM-L6-v2.Q4_K_M",
-    "rerankerModel": "bge-reranker-v2-m3-Q8_0"
+    "rerankerModel": "bge-reranker-v2-m3-Q8_0",
+    "topK": 4
   }'
 ```
+
+## Enhanced Search with Context
+
+The API supports two modes of operation:
+
+1. Basic Mode (Default):
+
+   - Simple chunking and embeddings
+   - Direct content-based search
+   - No context generation
+
+2. Context-Aware Mode:
+   - Generates contextual descriptions for chunks
+   - Uses dual embeddings for richer search
+   - Choice of context generation:
+     - Local: Uses Llama-2 model (DEFAULT_CHAT_MODEL)
+     - OpenAI: Uses specified model (requires API key)
+
+To enable context-aware search:
+
+1. Set `generateContexts: true` in chunking request
+2. Optionally set `useOpenAI: true` for OpenAI-powered context generation
+
+The combined score is weighted:
+
+- 60% content similarity
+- 40% context similarity (when available)
 
 ## Memory Management
 

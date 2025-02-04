@@ -2,17 +2,78 @@ import type { Context } from "hono";
 import { loadModel } from "./models";
 import type { RankedResult } from "./types";
 
+import OpenAI from "openai";
+import { DEFAULT_CHAT_MODEL, OPENAI_CONFIG } from "./config";
+
 interface Chunk {
   content: string;
+  context?: string;
+  content_embedding?: number[];
+  context_embedding?: number[];
   metadata?: Record<string, any>;
 }
 
 interface ChunkWithScore extends Chunk {
-  score: number;
+  content_score: number;
+  context_score?: number;
+  combined_score: number;
+}
+
+// Try to initialize OpenAI if configured
+let openai: OpenAI | undefined;
+if (OPENAI_CONFIG.apiKey) {
+  openai = new OpenAI({
+    apiKey: OPENAI_CONFIG.apiKey,
+  });
+}
+
+// Generate context using either OpenAI or local model
+async function generateContext(
+  chunk: string,
+  document: string,
+  useOpenAI = false
+): Promise<string> {
+  const prompt = `<document>
+${document}
+</document>
+Here is the chunk we want to situate within the whole document
+<chunk>
+${chunk}
+</chunk>
+Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk. Answer only with the succinct context and nothing else.`;
+
+  if (useOpenAI && openai) {
+    const response = await openai.chat.completions.create({
+      model: OPENAI_CONFIG.modelName,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0,
+      max_tokens: 200,
+    });
+    return response.choices[0].message.content?.trim() || "";
+  }
+
+  // Fallback to local model
+  const modelContext = await loadModel(DEFAULT_CHAT_MODEL, "chat");
+  if (!modelContext.model) {
+    throw new Error("Chat model not loaded");
+  }
+
+  const result = await modelContext.model.complete(prompt, {
+    temperature: 0,
+    maxTokens: 200,
+  });
+
+  return result.choices[0].text.trim();
 }
 
 // Function to split text into chunks with overlap
-function splitIntoChunks(text: string, chunkSize = 500, overlap = 50): Chunk[] {
+async function splitIntoChunks(
+  text: string,
+  chunkSize = 500,
+  overlap = 50,
+  generateContexts = false,
+  useOpenAI = false
+): Promise<Chunk[]> {
   const chunks: Chunk[] = [];
   const words = text.split(/\s+/);
 
@@ -27,6 +88,12 @@ function splitIntoChunks(text: string, chunkSize = 500, overlap = 50): Chunk[] {
     });
   }
 
+  if (generateContexts) {
+    // Generate context for each chunk
+    for (const chunk of chunks) {
+      chunk.context = await generateContext(chunk.content, text, useOpenAI);
+    }
+  }
   return chunks;
 }
 
@@ -39,12 +106,23 @@ async function generateEmbeddings(model: string, chunks: Chunk[]) {
 
   const results = [];
   for (const chunk of chunks) {
-    const embedding = await modelContext.embeddingContext.getEmbeddingFor(
-      chunk.content
-    );
+    // Generate embeddings for both content and context
+    const contentEmbedding =
+      await modelContext.embeddingContext.getEmbeddingFor(chunk.content);
+
+    let contextEmbedding = null;
+    if (chunk.context) {
+      contextEmbedding = await modelContext.embeddingContext.getEmbeddingFor(
+        chunk.context
+      );
+    }
+
     results.push({
       ...chunk,
-      embedding: [...embedding.vector],
+      content_embedding: [...contentEmbedding.vector],
+      context_embedding: contextEmbedding
+        ? [...contextEmbedding.vector]
+        : undefined,
     });
   }
 
@@ -70,17 +148,43 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-// Find similar chunks using embeddings
+// Find similar chunks using embeddings with combined scoring
 async function findSimilarChunks(
   queryEmbedding: number[],
-  chunks: (Chunk & { embedding: number[] })[]
+  chunks: Chunk[]
 ): Promise<ChunkWithScore[]> {
   return chunks
-    .map((chunk) => ({
-      ...chunk,
-      score: cosineSimilarity(queryEmbedding, chunk.embedding),
-    }))
-    .sort((a, b) => b.score - a.score);
+    .map((chunk) => {
+      if (!chunk.content_embedding) {
+        throw new Error("Chunk missing content embedding");
+      }
+
+      const contentScore = cosineSimilarity(
+        queryEmbedding,
+        chunk.content_embedding
+      );
+      let contextScore = 0;
+
+      if (chunk.context_embedding) {
+        contextScore = cosineSimilarity(
+          queryEmbedding,
+          chunk.context_embedding
+        );
+      }
+
+      // Weighted combination (0.6 content, 0.4 context)
+      const combinedScore = chunk.context_embedding
+        ? 0.6 * contentScore + 0.4 * contextScore
+        : contentScore;
+
+      return {
+        ...chunk,
+        content_score: contentScore,
+        context_score: chunk.context_embedding ? contextScore : undefined,
+        combined_score: combinedScore,
+      };
+    })
+    .sort((a, b) => b.combined_score - a.combined_score);
 }
 
 // Rerank chunks using specified model
@@ -113,7 +217,14 @@ async function rerankChunks(
 // Handler for chunking documents
 export async function handleDocumentChunking(c: Context) {
   try {
-    const { text, model, chunkSize = 500, overlap = 50 } = await c.req.json();
+    const {
+      text,
+      model,
+      chunkSize = 500,
+      overlap = 50,
+      generateContexts = false,
+      useOpenAI = false,
+    } = await c.req.json();
 
     if (!text || !model) {
       return c.json(
@@ -129,11 +240,41 @@ export async function handleDocumentChunking(c: Context) {
       );
     }
 
-    const chunks = splitIntoChunks(text, chunkSize, overlap);
+    // Validate OpenAI usage
+    if (useOpenAI && !openai) {
+      return c.json(
+        {
+          error: {
+            message:
+              "OpenAI API key not configured. Set OPENAI_API_KEY in .env file or disable useOpenAI option.",
+            type: "configuration_error",
+            param: "useOpenAI",
+            code: null,
+          },
+        },
+        400
+      );
+    }
+
+    const chunks = await splitIntoChunks(
+      text,
+      chunkSize,
+      overlap,
+      generateContexts,
+      useOpenAI
+    );
     const chunksWithEmbeddings = await generateEmbeddings(model, chunks);
 
     return c.json({
-      chunks: chunksWithEmbeddings,
+      chunks: chunksWithEmbeddings.map((chunk) => ({
+        ...chunk,
+        content_embedding: chunk.content_embedding,
+        context_embedding: chunk.context_embedding,
+        metadata: {
+          ...chunk.metadata,
+          has_context: !!chunk.context,
+        },
+      })),
     });
   } catch (error) {
     console.error("Error processing document:", error);
@@ -190,9 +331,16 @@ export async function handleQueryChunks(c: Context) {
     );
 
     // Find similar chunks
+    // Convert query embedding to array and find similar chunks
     const similarChunks = await findSimilarChunks(
       [...queryEmbedding.vector],
-      chunks
+      chunks.map(
+        (chunk: { content_embedding: any; context_embedding: any }) => ({
+          ...chunk,
+          content_embedding: chunk.content_embedding,
+          context_embedding: chunk.context_embedding,
+        })
+      )
     );
 
     // Rerank if specified
@@ -205,22 +353,50 @@ export async function handleQueryChunks(c: Context) {
       );
 
       return c.json({
-        results: rerankedChunks.map(({ content, metadata, score }) => ({
-          content,
-          metadata,
-          score,
-        })),
+        results: rerankedChunks.map(
+          ({
+            content,
+            context,
+            metadata,
+            content_score,
+            context_score,
+            combined_score,
+          }) => ({
+            content,
+            context,
+            metadata,
+            scores: {
+              content: content_score,
+              context: context_score,
+              combined: combined_score,
+            },
+          })
+        ),
       });
     }
 
     return c.json({
       results: similarChunks
         .slice(0, topK)
-        .map(({ content, metadata, score }) => ({
-          content,
-          metadata,
-          score,
-        })),
+        .map(
+          ({
+            content,
+            context,
+            metadata,
+            content_score,
+            context_score,
+            combined_score,
+          }) => ({
+            content,
+            context,
+            metadata,
+            scores: {
+              content: content_score,
+              context: context_score,
+              combined: combined_score,
+            },
+          })
+        ),
     });
   } catch (error) {
     console.error("Error querying chunks:", error);

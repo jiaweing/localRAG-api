@@ -1,15 +1,13 @@
-import path from "path";
-import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+dotenv.config();
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const projectRoot = path.resolve(__dirname, "..");
+export const PORT = process.env.PORT || 23673;
 
-// Default models directories
-export const MODELS_BASE_DIR = path.join(projectRoot, "models");
-export const MODEL_DIRS = {
-  embedding: path.join(MODELS_BASE_DIR, "embedding"),
-  reranker: path.join(MODELS_BASE_DIR, "reranker"),
-  chat: path.join(MODELS_BASE_DIR, "chat"),
-} as const;
+// OpenAI Configuration
+export const OPENAI_CONFIG = {
+  apiKey: process.env.OPENAI_API_KEY,
+  modelName: process.env.OPENAI_MODEL_NAME || "gpt-4-turbo-preview",
+};
 
-export const PORT = 25678;
+// Default Chat Model for Local Context Generation
+export const DEFAULT_CHAT_MODEL = "Llama-3.2-1B-Instruct-Q4_K_M";
