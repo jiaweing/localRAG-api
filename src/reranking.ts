@@ -1,90 +1,48 @@
-import type { Context } from "hono";
-import { loadModel } from "./models";
-import type { RankedResult } from "./types";
+import { getLlama } from "node-llama-cpp";
+import path from "path";
 
-export async function handleReranking(c: Context) {
-  try {
-    const { model, query, documents } = await c.req.json();
+let rerankerModel: Awaited<
+  ReturnType<typeof getLlama.prototype.loadModel>
+> | null = null;
+let rerankerContext: any | null = null;
 
-    if (!model || !query || !Array.isArray(documents)) {
-      return c.json(
-        {
-          error: {
-            message:
-              "Missing required parameters: model, query, documents (array)",
-            type: "invalid_request_error",
-            param: !model ? "model" : !query ? "query" : "documents",
-            code: null,
-          },
-        },
-        400
-      );
-    }
+export async function initRerankerModel() {
+  if (rerankerModel) return;
 
-    const modelContext = await loadModel(model, "reranker");
-    if (!modelContext.rankingContext) {
-      return c.json(
-        {
-          error: {
-            message: "Model is not suitable for reranking",
-            type: "invalid_request_error",
-            param: "model",
-            code: null,
-          },
-        },
-        400
-      );
-    }
+  const llama = await getLlama();
+  rerankerModel = await llama.loadModel({
+    modelPath: path.join(
+      process.cwd(),
+      "models",
+      "reranker",
+      "bge-reranker-v2-m3-Q8_0.gguf"
+    ),
+  });
+  rerankerContext = await rerankerModel.createRankingContext();
+}
 
-    const rankedResults: RankedResult[] =
-      await modelContext.rankingContext.rankAndSort(query, documents);
+interface RankedChunk {
+  text: string;
+  score: number;
+}
 
-    return c.json({
-      object: "list",
-      model,
-      data: rankedResults.map((result: RankedResult, index: number) => ({
-        object: "rerank_result",
-        document: result.document,
-        relevance_score: result.score,
-        index,
-      })),
-      usage: {
-        prompt_tokens: -1, // Not available with local models
-        total_tokens: -1,
-      },
-    });
-  } catch (error: unknown) {
-    console.error("Error reranking documents:", error);
-    if (
-      error instanceof Error &&
-      "code" in error &&
-      (error as any).code === "ENOENT"
-    ) {
-      return c.json(
-        {
-          error: {
-            message: `Model '${
-              (error as any).path
-            }' not found in models directory`,
-            type: "invalid_request_error",
-            param: "model",
-            code: "model_not_found",
-          },
-        },
-        404
-      );
-    }
-    return c.json(
-      {
-        error: {
-          message:
-            error instanceof Error ? error.message : "Unknown error occurred",
-          type: "server_error",
-          param: null,
-          code: null,
-        },
-      },
-      500
-    );
+export async function rerankChunks(
+  query: string,
+  chunks: string[],
+  modelName: string // Not used in this implementation but kept for API compatibility
+): Promise<RankedChunk[]> {
+  if (!rerankerContext) {
+    await initRerankerModel();
   }
+
+  if (!rerankerContext) {
+    throw new Error("Failed to initialize reranker model");
+  }
+
+  const rankedResults = await rerankerContext.rankAndSort(query, chunks);
+
+  return rankedResults.map((result: { document: string; score: number }) => ({
+    text: result.document,
+    score: result.score,
+  }));
 }

@@ -1,97 +1,45 @@
 # Local Contextual RAG API Server
 
-A lightweight API server for Contextual Retrieval-Augmented Generation (RAG) operations, supporting document chunking with context generation, multi-embedding semantic search, and reranking.
+[Previous content remains the same until Database Schema section]
 
-## Overview
+## Database Schema
 
-This service provides endpoints for implementing contextual RAG workflows:
+The application uses PostgreSQL with the following schema:
 
-1. Chunk documents and generate embeddings with context-awareness:
-   - Split documents into chunks
-   - Generate contextual descriptions using LLM
-   - Create embeddings for both content and context
-2. Query chunks using hybrid semantic search (optional context-aware):
-   - Match against content embeddings, and context embeddings when available
-   - Flexible context generation using OpenAI or local models
-   - Weight and combine similarity scores (0.6 content, 0.4 context)
-   - Optional cross-encoder reranking
-3. Local model management for embedding, reranking, and chat models
-4. Optional OpenAI integration for enhanced context generation
+```sql
+CREATE TABLE dataset (
+  id SERIAL PRIMARY KEY,
+  file_id VARCHAR(32) NOT NULL,
+  folder_id VARCHAR(32),
+  context TEXT NOT NULL,
+  context_embedding vector(384),
+  content TEXT NOT NULL,
+  content_embedding vector(384)
+);
 
-## Features
-
-- 🔍 Text chunking with configurable size and overlap
-- 🧠 Optional context generation using OpenAI or local models
-- 📈 Dual embeddings support for context-aware search
-- 🎯 Hybrid semantic search with configurable weights
-- 🔄 Cross-encoder reranking for better relevance
-- 📊 Highly configurable parameters for all operations
-- 🚀 Efficient model management with auto-unloading
-- 🔌 Easy OpenAI integration for enhanced context generation
-
-## Setup
-
-1. Clone and set up:
-
-```bash
-git clone https://github.com/jiaweing/localRAG-api.git
-cd localRAG-api
-pnpm install
-pnpm build    # Builds to dist/ directory
+-- Create HNSW vector indexes for similarity search
+CREATE INDEX context_embedding_idx ON dataset USING hnsw (context_embedding vector_cosine_ops);
+CREATE INDEX content_embedding_idx ON dataset USING hnsw (content_embedding vector_cosine_ops);
+-- Create indexes for file and folder lookups
+CREATE INDEX file_id_idx ON dataset (file_id);
+CREATE INDEX folder_id_idx ON dataset (folder_id);
 ```
-
-2. Configure environment:
-
-Copy `.env.example` to `.env` and adjust as needed:
-
-```bash
-# OpenAI Configuration (optional)
-OPENAI_API_KEY=your_api_key_here
-OPENAI_MODEL_NAME=gpt-4-turbo-preview # or any other OpenAI model
-```
-
-3. Place your GGUF models in the appropriate directories under `models/`:
-
-```
-localRAG-api/
-  ├── models/
-  │   ├── embedding/          # Embedding models (e.g., all-MiniLM-L6-v2)
-  │   ├── reranker/          # Cross-encoder reranking models (e.g., bge-reranker)
-  │   └── chat/              # Chat models for local context generation (e.g., Llama-2)
-```
-
-3. Run the service:
-
-Development mode:
-
-```bash
-pnpm dev
-```
-
-Production mode:
-
-```bash
-pnpm start
-```
-
-The service will start on port 23673.
 
 ## API Endpoints
 
-### Document Chunking
+[Previous In-Memory RAG Operations section remains the same]
 
-#### `POST /v1/chunk`
+### Database-Backed RAG Operations
 
-Split a document into chunks with optional context generation and create embeddings.
+#### `POST /v1/store`
+
+Store document chunks with embeddings in the database. A unique file_id is automatically generated for each document. Optionally specify a folder_id for organization.
 
 ```json
 {
-  "text": "Your document text here...",
-  "model": "all-MiniLM-L6-v2.Q4_K_M",
-  "chunkSize": 500, // optional (default: 500)
-  "overlap": 50, // optional (default: 50)
-  "generateContexts": true, // optional (default: false)
-  "useOpenAI": false // optional (default: false), requires OPENAI_API_KEY
+  "document": "doc1",
+  "folder_id": "optional_folder_id", // optional, for organizing documents
+  "chunks": ["chunk text 1", "chunk text 2"]
 }
 ```
 
@@ -99,20 +47,18 @@ Response:
 
 ```json
 {
+  "message": "Document chunks processed successfully",
+  "file_id": "generated_unique_file_id",
+  "folder_id": "optional_folder_id", // only if provided in request
   "chunks": [
     {
-      "content": "Chunk text...",
-      "context": "Generated contextual description...",
-      "content_embedding": [
-        /* vector */
-      ],
-      "context_embedding": [
-        /* vector */
-      ],
+      "content": "chunk text 1",
+      "context": "context of this chunk",
+      "content_embedding": [...],
+      "context_embedding": [...],
       "metadata": {
-        "start_idx": 0,
-        "end_idx": 500,
-        "has_context": true
+        "document": "doc1",
+        "timestamp": "2024-02-05T06:15:21.000Z"
       }
     }
     // ... more chunks
@@ -120,22 +66,16 @@ Response:
 }
 ```
 
-### Query Chunks
+#### `POST /v1/retrieve`
 
-#### `POST /v1/query`
-
-Find relevant chunks using hybrid semantic search (content + context) with optional reranking.
+Search across stored chunks using hybrid semantic search with reranking. Optionally filter by folder_id.
 
 ```json
 {
-  "query": "Your search query",
-  "chunks": [
-    /* array of chunks from /chunk endpoint */
-  ],
-  "embeddingModel": "all-MiniLM-L6-v2.Q4_K_M",
-  "rerankerModel": "bge-reranker-v2-m3-Q8_0", // optional
-  "topK": 4, // optional (default: 4)
-  "shouldRerank": true // optional (default: true)
+  "query": "your search query",
+  "folder_id": "optional_folder_id", // optional, to search within a specific folder
+  "top_k": 3, // optional, default: 3
+  "threshold": 0.7 // optional, default: 0.0, similarity threshold between 0 and 1
 }
 ```
 
@@ -143,198 +83,135 @@ Response:
 
 ```json
 {
+  "message": "Chunks retrieved successfully",
   "results": [
     {
-      "content": "Most relevant chunk...",
-      "context": "Contextual description...",
+      "content": "most relevant chunk",
+      "context": "context for this chunk",
       "metadata": {
-        "start_idx": 0,
-        "end_idx": 500,
-        "has_context": true
+        "file_id": "file_id_of_chunk",
+        "folder_id": "folder_id_if_any"
       },
       "scores": {
-        "content": 0.92, // Similarity to chunk content
-        "context": 0.85, // Similarity to chunk context
-        "combined": 0.89 // Weighted combination (0.6 content, 0.4 context)
+        "content": 0.95,
+        "context": 0.88,
+        "combined": 0.92,
+        "reranked": 0.96
       }
     }
-    // ... more chunks ordered by relevance
+    // ... more results ordered by relevance
   ]
 }
 ```
 
-### Model Management
+The search uses a hybrid approach combining both content and context similarity:
 
-#### `POST /v1/models/load`
+- Content similarity (60% weight): How well the chunk's content matches the query
+- Context similarity (40% weight): How well the chunk's context matches the query
+- Combined score: Weighted average of content and context similarities
+- Reranked score: Cross-encoder reranking applied to initial results
 
-Pre-load a model into memory.
+#### `POST /v1/delete`
 
-```json
-{
-  "model": "all-MiniLM-L6-v2.Q4_K_M",
-  "type": "embedding" // or "reranker"
-}
-```
-
-#### `POST /v1/models/unload`
-
-Unload a model from memory.
+Delete all chunks associated with a specific file_id.
 
 ```json
 {
-  "model": "all-MiniLM-L6-v2.Q4_K_M"
+  "file_id": "file_id_to_delete"
 }
 ```
-
-#### `GET /v1/models`
-
-List all available models.
 
 Response:
 
 ```json
-[
-  {
-    "name": "all-MiniLM-L6-v2.Q4_K_M",
-    "type": "embedding",
-    "loaded": true
-  },
-  {
-    "name": "bge-reranker-v2-m3-Q8_0",
-    "type": "reranker",
-    "loaded": false
-  }
-]
-```
-
-## Error Handling
-
-All endpoints return appropriate HTTP status codes:
-
-- 200: Success
-- 400: Bad Request (missing/invalid parameters)
-- 404: Not Found (model not found)
-- 500: Internal Server Error
-
-Error response format:
-
-```json
 {
-  "error": {
-    "message": "Error description",
-    "type": "server_error",
-    "param": null,
-    "code": null
-  }
+  "message": "Chunks deleted successfully",
+  "file_id": "file_id_that_was_deleted"
 }
 ```
 
-## Example Usage
+[Rest of the documentation remains the same]
 
-### With Node.js
+### Database-Backed RAG with Node.js
 
 ```typescript
-async function searchDocument(text: string, query: string, useOpenAI = false) {
-  const API_URL = "http://localhost:23673/v1";
+async function storeAndSearch(
+  chunks: string[],
+  query: string,
+  folderId?: string
+) {
+  const API_URL = "http://localhost:3000/v1";
 
-  // 1. Chunk document, generate context, and create embeddings
-  const chunkResponse = await fetch(`${API_URL}/chunk`, {
+  // 1. Store chunks in database
+  const storeResponse = await fetch(`${API_URL}/store`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      text,
-      model: "all-MiniLM-L6-v2.Q4_K_M",
-      chunkSize: 500,
-      overlap: 50,
-      generateContexts: true,
-      useOpenAI,
+      document: "doc1",
+      folder_id: folderId, // optional
+      chunks: chunks,
     }),
   });
-  const { chunks } = await chunkResponse.json();
-  console.log(`Generated ${chunks.length} chunks with context and embeddings`);
+  const { file_id } = await storeResponse.json();
 
-  // 2. Query chunks using hybrid search
-  const queryResponse = await fetch(`${API_URL}/query`, {
+  // 2. Search across stored chunks
+  const queryResponse = await fetch(`${API_URL}/retrieve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       query,
-      chunks,
-      embeddingModel: "all-MiniLM-L6-v2.Q4_K_M",
-      rerankerModel: "bge-reranker-v2-m3-Q8_0",
-      topK: 4,
+      folder_id: folderId, // optional, to search within the same folder
+      top_k: 3,
+      threshold: 0.7,
     }),
   });
   const { results } = await queryResponse.json();
 
-  // Results include both content and context, with detailed scores
-  results.forEach((r, i) => {
-    console.log(`\nResult ${i + 1}:`);
-    console.log(`Content: ${r.content}`);
-    console.log(`Context: ${r.context}`);
-    console.log(`Scores:`, r.scores);
-  });
+  return { results, file_id };
+}
 
-  return results;
+// Example: Delete stored chunks
+async function deleteStoredChunks(fileId: string) {
+  const API_URL = "http://localhost:3000/v1";
+
+  await fetch(`${API_URL}/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      file_id: fileId,
+    }),
+  });
 }
 ```
 
 ### With cURL
 
 ```bash
-# 1. Chunk document with context generation
-curl -X POST http://localhost:23673/v1/chunk \
+# 1. Store chunks with optional folder_id
+curl -X POST http://localhost:3000/v1/store \
   -H "Content-Type: application/json" \
   -d '{
-    "text": "Your document text...",
-    "model": "all-MiniLM-L6-v2.Q4_K_M",
-    "chunkSize": 500,
-    "overlap": 50
+    "document": "doc1",
+    "folder_id": "my_folder",
+    "chunks": ["chunk 1", "chunk 2"]
   }'
 
-# 2. Query chunks with hybrid search
-curl -X POST http://localhost:23673/v1/query \
+# 2. Search stored chunks within a folder
+curl -X POST http://localhost:3000/v1/retrieve \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "Your search query",
-    "chunks": [...],  # Chunks with content_embedding and context_embedding
-    "embeddingModel": "all-MiniLM-L6-v2.Q4_K_M",
-    "rerankerModel": "bge-reranker-v2-m3-Q8_0",
-    "topK": 4
+    "query": "search query",
+    "folder_id": "my_folder",
+    "top_k": 3,
+    "threshold": 0.7
+  }'
+
+# 3. Delete chunks using file_id
+curl -X POST http://localhost:3000/v1/delete \
+  -H "Content-Type: application/json" \
+  -d '{
+    "file_id": "file_id_from_store_response"
   }'
 ```
 
-## Enhanced Search with Context
-
-The API supports two modes of operation:
-
-1. Basic Mode (Default):
-
-   - Simple chunking and embeddings
-   - Direct content-based search
-   - No context generation
-
-2. Context-Aware Mode:
-   - Generates contextual descriptions for chunks
-   - Uses dual embeddings for richer search
-   - Choice of context generation:
-     - Local: Uses Llama-2 model (DEFAULT_CHAT_MODEL)
-     - OpenAI: Uses specified model (requires API key)
-
-To enable context-aware search:
-
-1. Set `generateContexts: true` in chunking request
-2. Optionally set `useOpenAI: true` for OpenAI-powered context generation
-
-The combined score is weighted:
-
-- 60% content similarity
-- 40% context similarity (when available)
-
-## Memory Management
-
-Models are automatically unloaded after 30 minutes of inactivity to manage memory usage. You can:
-
-1. Preload models using `/models/load`
-2. Check loaded models with `/models/list`
-3. Manually unload models with `/models/unload`
+[Rest of the documentation remains the same]

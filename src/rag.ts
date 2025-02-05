@@ -5,19 +5,7 @@ import type { RankedResult } from "./types";
 import OpenAI from "openai";
 import { DEFAULT_CHAT_MODEL, OPENAI_CONFIG } from "./config";
 
-interface Chunk {
-  content: string;
-  context?: string;
-  content_embedding?: number[];
-  context_embedding?: number[];
-  metadata?: Record<string, any>;
-}
-
-interface ChunkWithScore extends Chunk {
-  content_score: number;
-  context_score?: number;
-  combined_score: number;
-}
+import { Chunk, ChunkWithScore } from "./types.js";
 
 // Try to initialize OpenAI if configured
 let openai: OpenAI | undefined;
@@ -179,12 +167,14 @@ async function findSimilarChunks(
 
       return {
         ...chunk,
-        content_score: contentScore,
-        context_score: chunk.context_embedding ? contextScore : undefined,
-        combined_score: combinedScore,
+        scores: {
+          content: contentScore,
+          context: chunk.context_embedding ? contextScore : undefined,
+          combined: combinedScore,
+        },
       };
     })
-    .sort((a, b) => b.combined_score - a.combined_score);
+    .sort((a, b) => b.scores.combined - a.scores.combined);
 }
 
 // Rerank chunks using specified model
@@ -208,9 +198,16 @@ async function rerankChunks(
   return rankedResults
     .map((result, idx) => ({
       ...chunks[idx],
-      score: result.score,
+      scores: {
+        ...chunks[idx].scores,
+        reranked: result.score,
+      },
     }))
-    .sort((a, b) => b.score - a.score)
+    .sort(
+      (a, b) =>
+        (b.scores.reranked ?? b.scores.combined) -
+        (a.scores.reranked ?? a.scores.combined)
+    )
     .slice(0, topK);
 }
 
@@ -354,21 +351,12 @@ export async function handleQueryChunks(c: Context) {
 
       return c.json({
         results: rerankedChunks.map(
-          ({
-            content,
-            context,
-            metadata,
-            content_score,
-            context_score,
-            combined_score,
-          }) => ({
+          ({ content, context, metadata, scores }) => ({
             content,
             context,
             metadata,
             scores: {
-              content: content_score,
-              context: context_score,
-              combined: combined_score,
+              ...scores,
             },
           })
         ),
@@ -378,25 +366,12 @@ export async function handleQueryChunks(c: Context) {
     return c.json({
       results: similarChunks
         .slice(0, topK)
-        .map(
-          ({
-            content,
-            context,
-            metadata,
-            content_score,
-            context_score,
-            combined_score,
-          }) => ({
-            content,
-            context,
-            metadata,
-            scores: {
-              content: content_score,
-              context: context_score,
-              combined: combined_score,
-            },
-          })
-        ),
+        .map(({ content, context, metadata, scores }) => ({
+          content,
+          context,
+          metadata,
+          scores,
+        })),
     });
   } catch (error) {
     console.error("Error querying chunks:", error);

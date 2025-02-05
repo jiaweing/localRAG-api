@@ -2,6 +2,11 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { PORT } from "./config";
 import {
+  handleDeleteChunks,
+  handleSearchChunks,
+  handleStoreDocument,
+} from "./db-rag";
+import {
   initializeModelDirectories,
   listModels,
   loadModel,
@@ -18,9 +23,14 @@ app.get("/", (c) => {
   return c.text("Local RAG API Service");
 });
 
-// RAG endpoints
+// In-memory RAG endpoints
 app.post("/v1/chunk", handleDocumentChunking);
 app.post("/v1/query", handleQueryChunks);
+
+// Database-backed RAG endpoints
+app.post("/v1/store", handleStoreDocument);
+app.post("/v1/retrieve", handleSearchChunks);
+app.post("/v1/delete", handleDeleteChunks);
 
 // Model management endpoints
 app.post("/v1/models/load", async (c) => {
