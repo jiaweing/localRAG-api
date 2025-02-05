@@ -1,35 +1,45 @@
 import { getLlama } from "node-llama-cpp";
 import path from "path";
+import { EMBEDDING_MODEL } from "./config";
 
-let embeddingModel: Awaited<
-  ReturnType<typeof getLlama.prototype.loadModel>
-> | null = null;
-let embeddingContext: any | null = null;
-
-export async function initEmbeddingModel() {
-  if (embeddingModel) return;
-
-  const llama = await getLlama();
-  embeddingModel = await llama.loadModel({
-    modelPath: path.join(
-      process.cwd(),
-      "models",
-      "embedding",
-      "all-MiniLM-L6-v2.Q4_K_M.gguf"
-    ),
-  });
-  embeddingContext = await embeddingModel.createEmbeddingContext();
+interface ModelContext {
+  model: Awaited<ReturnType<typeof getLlama.prototype.loadModel>>;
+  context: any;
 }
 
-export async function getEmbedding(text: string): Promise<number[]> {
-  if (!embeddingContext) {
-    await initEmbeddingModel();
+const modelContexts = new Map<string, ModelContext>();
+
+export async function initEmbeddingModel(modelName: string = EMBEDDING_MODEL) {
+  if (modelContexts.has(modelName)) return;
+
+  const llama = await getLlama();
+  const modelPath = path.join(
+    process.cwd(),
+    "models",
+    "embedding",
+    modelName.endsWith(".gguf") ? modelName : `${modelName}.gguf`
+  );
+  const model = await llama.loadModel({
+    modelPath,
+  });
+  const context = await model.createEmbeddingContext();
+
+  modelContexts.set(modelName, { model, context });
+}
+
+export async function getEmbedding(
+  text: string,
+  model: string = EMBEDDING_MODEL
+): Promise<number[]> {
+  if (!modelContexts.has(model)) {
+    await initEmbeddingModel(model);
   }
 
-  if (!embeddingContext) {
-    throw new Error("Failed to initialize embedding model");
+  const context = modelContexts.get(model)?.context;
+  if (!context) {
+    throw new Error(`Failed to initialize embedding model: ${model}`);
   }
 
-  const embedding = await embeddingContext.getEmbeddingFor(text);
+  const embedding = await context.getEmbeddingFor(text);
   return [...embedding.vector];
 }

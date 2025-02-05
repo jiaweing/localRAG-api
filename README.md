@@ -1,6 +1,6 @@
 # Local Contextual RAG API Server
 
-A lightweight API server for Contextual Retrieval-Augmented Generation (RAG) operations, supporting document chunking with context generation, multi-embedding semantic search, and reranking.
+A lightweight & fully customizable API server for Contextual Retrieval-Augmented Generation (RAG) operations, supporting document chunking with context generation, multi-embedding semantic search, and reranking.
 
 ## Overview
 
@@ -18,8 +18,10 @@ This service provides endpoints for implementing contextual RAG workflows:
 
 - 🔍 Text chunking with configurable size and overlap
 - 🧠 Optional context generation using OpenAI or local models
-- 📈 Dual embeddings support for context-aware search
-- 🎯 Hybrid semantic search with configurable weights
+- 📈 Flexible embedding model selection:
+  - Choose models per request in stateless operations
+  - Configure default model for database operations
+- 🎯 Hybrid semantic search with configurable weights (60/40 content/context)
 - 🔄 Cross-encoder reranking for better relevance
 - 📊 Highly configurable parameters for all operations
 - 🚀 Efficient model management with auto-unloading
@@ -51,12 +53,19 @@ cp .env.example .env
 Required environment variables:
 
 ```bash
+# Server Configuration
+PORT=57352
+
 # OpenAI Configuration (optional)
 OPENAI_API_KEY=your_api_key_here
 OPENAI_MODEL_NAME=gpt-4o-mini # or any other OpenAI model
 
+# Default Models Configuration
+EMBEDDING_MODEL=all-MiniLM-L6-v2.Q4_K_M # Model used for database RAG operations
+
 # Database Configuration
 DATABASE_URL=postgresql://postgres:password@localhost:5432/rag
+
 ```
 
 4. Place your GGUF models in the appropriate directories under `models/`:
@@ -215,7 +224,9 @@ Store a document in the database. The document will be automatically chunked wit
   "document": "full document text",
   "folder_id": "optional-folder-id", // optional
   "chunkSize": 500, // optional, default: 500
-  "overlap": 50 // optional, default: 50
+  "overlap": 50, // optional, default: 50
+  "generateContexts": true, // optional, default: false
+  "useOpenAI": false // optional, default: false
 }
 ```
 
@@ -284,6 +295,52 @@ The search uses a hybrid approach combining both content and context similarity:
 - Context similarity (40% weight): How well the chunk's context matches the query
 - Combined score: Weighted average of content and context similarities
 - Reranked score: Cross-encoder reranking applied to initial results
+
+#### `GET /v1/documents`
+
+List stored documents with paginated results. Provides document previews with their first chunks and supports filtering by folder or file ID.
+
+Query Parameters:
+
+- `page`: Page number (Optional, default: 1)
+- `pageSize`: Items per page (Optional, default: 10, max: 100)
+- `folder_id`: Filter by folder (Optional)
+- `file_id`: Filter by file (Optional)
+
+Example Request:
+
+```
+GET /v1/documents?page=2&pageSize=20&folder_id=folder123
+```
+
+Response:
+
+```json
+{
+  "message": "Documents retrieved successfully",
+  "data": [
+    {
+      "file_id": "unique-file-id",
+      "folder_id": "optional-folder-id",
+      "content_preview": "first chunk content",
+      "context_preview": "first chunk context"
+    }
+  ],
+  "pagination": {
+    "current_page": 1,
+    "total_pages": 5,
+    "total_items": 50,
+    "page_size": 10
+  }
+}
+```
+
+The endpoint returns a paginated list of documents, with each document containing:
+
+- `file_id`: Unique identifier for the document
+- `folder_id`: Optional folder grouping
+- `content_preview`: First chunk of the document content
+- `context_preview`: Associated context for the first chunk
 
 #### `POST /v1/delete`
 
@@ -398,7 +455,7 @@ async function searchChunks(text: string, query: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       text,
-      model: "all-MiniLM-L6-v2.gguf",
+      model: "all-MiniLM-L6-v2",
       generateContexts: true,
       chunkSize: 500,
       overlap: 50,
@@ -413,8 +470,8 @@ async function searchChunks(text: string, query: string) {
     body: JSON.stringify({
       query,
       chunks: processedChunks,
-      embeddingModel: "all-MiniLM-L6-v2.gguf",
-      rerankerModel: "bge-reranker-base.gguf",
+      embeddingModel: "all-MiniLM-L6-v2",
+      rerankerModel: "bge-reranker-base",
       topK: 4,
       shouldRerank: true,
     }),
@@ -428,12 +485,15 @@ async function searchChunks(text: string, query: string) {
 ### With cURL
 
 ```bash
+# List documents with pagination and filters
+curl -X GET "http://localhost:57352/v1/documents?page=1&pageSize=10&folder_id=optional-folder-id"
+
 # Process document into chunks (Stateless RAG)
 curl -X POST http://localhost:57352/v1/chunk \
   -H "Content-Type: application/json" \
   -d '{
     "text": "your document text",
-    "model": "all-MiniLM-L6-v2.gguf",
+    "model": "all-MiniLM-L6-v2",
     "generateContexts": true,
     "chunkSize": 500,
     "overlap": 50
@@ -445,8 +505,8 @@ curl -X POST http://localhost:57352/v1/query \
   -d '{
     "query": "your search query",
     "chunks": [],
-    "embeddingModel": "all-MiniLM-L6-v2.gguf",
-    "rerankerModel": "bge-reranker-base.gguf",
+    "embeddingModel": "all-MiniLM-L6-v2",
+    "rerankerModel": "bge-reranker-base",
     "topK": 4,
     "shouldRerank": true
   }'
@@ -467,6 +527,8 @@ async function storeAndSearch(document: string, query: string) {
       folder_id: "optional-folder-id", // Optional: for organizing documents
       chunkSize: 500, // Optional: customize chunk size
       overlap: 50, // Optional: customize overlap
+      generateContexts: true, // Optional: enable context generation
+      useOpenAI: false, // Optional: use OpenAI for context generation
     }),
   });
   const { file_id, chunks: processedChunks } = await storeResponse.json();
@@ -513,7 +575,9 @@ curl -X POST http://localhost:57352/v1/store \
     "document": "full document text",
     "folder_id": "optional-folder-id",
     "chunkSize": 500,
-    "overlap": 50
+    "overlap": 50,
+    "generateContexts": true,
+    "useOpenAI": false
   }'
 
 # 2. Search stored chunks

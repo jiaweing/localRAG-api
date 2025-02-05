@@ -21,6 +21,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://postgres:password@db:5432/rag
       NODE_ENV: development
@@ -29,6 +31,7 @@ services:
       - "${PORT:-57352}:${PORT:-57352}"
     volumes:
       - /app/node_modules
+      - ./models:/app/models
     depends_on:
       db:
         condition: service_healthy

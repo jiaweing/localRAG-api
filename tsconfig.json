@@ -7,7 +7,7 @@
     "strict": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "."
+    "rootDirs": ["src", "db"]
   },
   "include": ["src/**/*", "db/**/*"],
   "exclude": ["node_modules"]

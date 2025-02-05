@@ -1,13 +1,15 @@
 {
   "name": "localrag-api",
   "version": "1.0.0",
-  "description": "OpenAI-compatible API server for running GGUF models locally",
+  "description": "OpenAI-compatible API server for local RAG implementations using GGUF models",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/src/index.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
   },
   "keywords": [
     "llm",

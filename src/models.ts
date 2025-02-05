@@ -50,6 +50,7 @@ export async function loadModel(
   } else if (type === "reranker") {
     context.rankingContext = await model.createRankingContext();
   }
+  // Chat context is managed by LlamaChatSession in chat.ts
 
   loadedModels.set(modelPath, context);
   return context;

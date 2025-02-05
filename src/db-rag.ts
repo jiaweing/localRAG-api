@@ -1,9 +1,9 @@
 import { randomBytes } from "crypto";
-import { cosineDistance, desc, eq, sql } from "drizzle-orm";
+import { and, cosineDistance, desc, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Context } from "hono";
 import { dataset } from "../db/schema.js";
-import { DATABASE_URL, DEFAULT_CHAT_MODEL } from "./config.js";
+import { DATABASE_URL, DEFAULT_CHAT_MODEL, EMBEDDING_MODEL } from "./config.js";
 import { getEmbedding } from "./embeddings.js";
 import { generateContext, splitIntoChunks } from "./rag.js";
 import { rerankChunks } from "./reranking.js";
@@ -24,6 +24,8 @@ export const handleStoreDocument = async (c: Context) => {
       folder_id,
       chunkSize = 500,
       overlap = 50,
+      generateContexts = false,
+      useOpenAI = false,
     } = await c.req.json();
 
     if (!document) {
@@ -33,16 +35,29 @@ export const handleStoreDocument = async (c: Context) => {
     // Generate a unique file ID for this document
     const file_id = generateFileId();
 
-    // Split document into chunks with context generation
-    const chunks = await splitIntoChunks(document, chunkSize, overlap, true);
+    // Split document into chunks with optional context generation
+    const chunks = await splitIntoChunks(
+      document,
+      chunkSize,
+      overlap,
+      generateContexts
+    );
 
     // Generate embeddings and context for each chunk and store in the database
     const processedChunks = await Promise.all(
       chunks.map(async (chunk: ChunkWithScore) => {
-        const contentEmbedding = await getEmbedding(chunk.content);
-        // Generate context for the chunk using the complete document
-        const chunkContext = await generateContext(chunk.content, document);
-        const contextEmbedding = await getEmbedding(chunkContext);
+        const contentEmbedding = await getEmbedding(
+          chunk.content,
+          EMBEDDING_MODEL
+        );
+        // Generate context for the chunk using the complete document if enabled
+        const chunkContext = generateContexts
+          ? await generateContext(chunk.content, document, useOpenAI)
+          : chunk.content;
+        const contextEmbedding = await getEmbedding(
+          chunkContext,
+          EMBEDDING_MODEL
+        );
 
         // Insert into the database
         const insertedChunk = await db.transaction(async (tx) => {
@@ -120,7 +135,7 @@ export const handleSearchChunks = async (c: Context) => {
     }
 
     // Get query embedding
-    const queryEmbedding = await getEmbedding(query);
+    const queryEmbedding = await getEmbedding(query, EMBEDDING_MODEL);
 
     // Calculate content and context similarities using SQL
     const contentSimilarity = sql<number>`1 - ${cosineDistance(
@@ -210,6 +225,77 @@ export const handleSearchChunks = async (c: Context) => {
     });
   } catch (error) {
     console.error("Error searching chunks:", error);
+    return c.json(
+      {
+        error:
+          error instanceof Error ? error.message : "Unknown error occurred",
+      },
+      500
+    );
+  }
+};
+
+export const handleListDocuments = async (c: Context) => {
+  try {
+    const query = await c.req.query();
+    const page = query.page ? parseInt(query.page) : 1;
+    const pageSize = query.pageSize ? parseInt(query.pageSize) : 10;
+    const folder_id = query.folder_id;
+    const file_id = query.file_id;
+
+    // Validate pagination parameters
+    const pageNum = Math.max(1, page);
+    const limit = Math.max(1, Math.min(100, pageSize)); // Cap at 100 items per page
+    const offset = (pageNum - 1) * limit;
+
+    // Build where clause based on filters
+    const whereConditions = [];
+    if (folder_id) whereConditions.push(eq(dataset.folder_id, folder_id));
+    if (file_id) whereConditions.push(eq(dataset.file_id, file_id));
+
+    const whereClause =
+      whereConditions.length > 0 ? and(...whereConditions) : undefined;
+
+    // Get total count for pagination
+    const totalCountResult = await db
+      .select({ count: sql<number>`count(distinct ${dataset.file_id})` })
+      .from(dataset)
+      .where(whereClause);
+
+    const totalCount = totalCountResult[0].count;
+    const totalPages = Math.ceil(totalCount / limit);
+
+    // Get distinct documents with first chunk for preview
+    const documents = await db
+      .select({
+        file_id: dataset.file_id,
+        folder_id: dataset.folder_id,
+        content_preview: dataset.content,
+        context_preview: dataset.context,
+      })
+      .from(dataset)
+      .where(whereClause)
+      .groupBy(
+        dataset.file_id,
+        dataset.folder_id,
+        dataset.content,
+        dataset.context
+      )
+      .limit(limit)
+      .offset(offset);
+
+    return c.json({
+      message: "Documents retrieved successfully",
+      data: documents,
+      pagination: {
+        current_page: pageNum,
+        total_pages: totalPages,
+        total_items: totalCount,
+        page_size: limit,
+      },
+    });
+  } catch (error) {
+    console.error("Error listing documents:", error);
     return c.json(
       {
         error:

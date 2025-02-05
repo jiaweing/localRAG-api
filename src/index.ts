@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { PORT } from "./config";
 import {
   handleDeleteChunks,
+  handleListDocuments,
   handleSearchChunks,
   handleStoreDocument,
 } from "./db-rag";
@@ -31,6 +32,7 @@ app.post("/v1/query", handleQueryChunks);
 app.post("/v1/store", handleStoreDocument);
 app.post("/v1/retrieve", handleSearchChunks);
 app.post("/v1/delete", handleDeleteChunks);
+app.get("/v1/documents", handleListDocuments);
 
 // Model management endpoints
 app.post("/v1/models/load", async (c) => {

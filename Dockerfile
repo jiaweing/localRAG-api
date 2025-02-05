@@ -18,7 +18,7 @@ ARG PORT=57352
 ENV PORT=$PORT
 EXPOSE $PORT
 
-# Install tsx globally for development
-RUN npm install -g tsx
+# Set permissions for start script
+RUN chmod +x start.sh
 
-CMD ["pnpm", "dev"]
+CMD ["./start.sh"]

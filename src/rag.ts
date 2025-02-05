@@ -2,8 +2,8 @@ import type { Context } from "hono";
 import { loadModel } from "./models";
 
 import OpenAI from "openai";
+import { createChatCompletion } from "./chat";
 import { DEFAULT_CHAT_MODEL, OPENAI_CONFIG } from "./config";
-
 import { Chunk, ChunkWithScore } from "./types.js";
 
 // Try to initialize OpenAI if configured
@@ -39,17 +39,14 @@ Please give a short succinct context to situate this chunk within the overall do
     return response.choices[0].message.content?.trim() || "";
   }
 
-  // Fallback to local model
-  const modelContext = await loadModel(DEFAULT_CHAT_MODEL, "chat");
-  if (!modelContext.model) {
-    throw new Error("Chat model not loaded");
-  }
+  const result = await createChatCompletion({
+    model: DEFAULT_CHAT_MODEL,
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0,
+    max_tokens: 200,
+  });
 
-  const result = await modelContext.model.createChat([
-    { role: "user", content: prompt },
-  ]);
-
-  return result.message.content.trim();
+  return result.choices[0].message.content.trim();
 }
 
 // Function to split text into chunks with overlap
@@ -89,35 +86,24 @@ export async function splitIntoChunks(
   return chunks;
 }
 
+import { getEmbedding } from "./embeddings.js";
+
 // Generate embeddings for chunks
 async function generateEmbeddings(model: string, chunks: Chunk[]) {
-  const modelContext = await loadModel(model, "embedding");
-  if (!modelContext.embeddingContext) {
-    throw new Error("Model is not suitable for embeddings");
-  }
-
   const results = [];
   for (const chunk of chunks) {
     // Generate embeddings for both content and context
-    const contentEmbedding =
-      await modelContext.embeddingContext.getEmbeddingFor(chunk.content);
-
-    let contextEmbedding = null;
-    if (chunk.context) {
-      contextEmbedding = await modelContext.embeddingContext.getEmbeddingFor(
-        chunk.context
-      );
-    }
+    const contentEmbedding = await getEmbedding(chunk.content, model);
+    const contextEmbedding = chunk.context
+      ? await getEmbedding(chunk.context, model)
+      : undefined;
 
     results.push({
       ...chunk,
-      content_embedding: [...contentEmbedding.vector],
-      context_embedding: contextEmbedding
-        ? [...contextEmbedding.vector]
-        : undefined,
+      content_embedding: contentEmbedding,
+      context_embedding: contextEmbedding,
     });
   }
-
   return results;
 }
 
@@ -321,19 +307,11 @@ export async function handleQueryChunks(c: Context) {
     }
 
     // Generate embedding for query
-    const modelContext = await loadModel(embeddingModel, "embedding");
-    if (!modelContext.embeddingContext) {
-      throw new Error("Model is not suitable for embeddings");
-    }
-
-    const queryEmbedding = await modelContext.embeddingContext.getEmbeddingFor(
-      query
-    );
+    const queryEmbedding = await getEmbedding(query, embeddingModel);
 
     // Find similar chunks
-    // Convert query embedding to array and find similar chunks
     const similarChunks = await findSimilarChunks(
-      [...queryEmbedding.vector],
+      queryEmbedding,
       chunks.map((chunk: ChunkWithScore) => ({
         ...chunk,
         content_embedding: chunk.content_embedding,

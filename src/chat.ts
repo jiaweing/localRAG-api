@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { LlamaChatSession, TemplateChatWrapper } from "node-llama-cpp";
-import { loadModel } from "./models";
+import { loadModel } from "./models.js";
 
 // Map to store chat sessions
 const chatSessions = new Map<string, LlamaChatSession>();
@@ -17,12 +17,102 @@ setInterval(() => {
   }
 }, 15 * 60 * 1000);
 
+// Core chat completion function that can be used by both endpoint and other functions
+export async function createChatCompletion({
+  model,
+  messages,
+  temperature = 0.7,
+  max_tokens,
+  stream = false,
+}: {
+  model: string;
+  messages: Array<{ role: string; content: string }>;
+  temperature?: number;
+  max_tokens?: number;
+  stream?: boolean;
+}) {
+  if (!model || !Array.isArray(messages) || messages.length === 0) {
+    throw new Error("Missing required parameters: model, messages (array)");
+  }
+
+  // Create a template chat wrapper for consistent formatting
+  const chatWrapper = new TemplateChatWrapper({
+    template: "{{systemPrompt}}\n{{history}}Assistant: {{completion}}\nHuman: ",
+    historyTemplate: {
+      system: "System: {{message}}\n",
+      user: "Human: {{message}}\n",
+      model: "Assistant: {{message}}\n",
+    },
+  });
+
+  const modelContext = await loadModel(model, "chat");
+  const sessionId = `${model}-${Date.now()}`;
+
+  // Process messages
+  let systemPrompt = "";
+  for (const msg of messages) {
+    if (msg.role === "system") {
+      systemPrompt = msg.content;
+    }
+  }
+
+  // Create or get existing chat session
+  let session = chatSessions.get(sessionId);
+  if (!session) {
+    // Create a new context and session
+    const context = await modelContext.model.createContext();
+    session = new LlamaChatSession({
+      systemPrompt,
+      contextSequence: context.getSequence(),
+      chatWrapper,
+    });
+    chatSessions.set(sessionId, session);
+    sessionCreationTimes.set(sessionId, Date.now());
+  }
+
+  if (stream) {
+    throw new Error("Streaming not supported in function mode");
+  } else {
+    // Non-streaming response
+    const response = await session.prompt(
+      messages[messages.length - 1].content,
+      {
+        temperature,
+        maxTokens: max_tokens,
+      }
+    );
+
+    return {
+      id: sessionId,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: response,
+          },
+          finish_reason: "stop",
+        },
+      ],
+      usage: {
+        prompt_tokens: -1,
+        completion_tokens: -1,
+        total_tokens: -1,
+      },
+    };
+  }
+}
+
+// Endpoint handler that uses the core chat completion function
 export async function handleChatCompletion(c: Context) {
   try {
     const {
       model,
       messages,
-      temperature = 0.7,
+      temperature,
       max_tokens,
       stream = false,
     } = await c.req.json();
@@ -41,151 +131,15 @@ export async function handleChatCompletion(c: Context) {
       );
     }
 
-    // Create a template chat wrapper for consistent formatting
-    const chatWrapper = new TemplateChatWrapper({
-      template:
-        "{{systemPrompt}}\n{{history}}Assistant: {{completion}}\nHuman: ",
-      historyTemplate: {
-        system: "System: {{message}}\n",
-        user: "Human: {{message}}\n",
-        model: "Assistant: {{message}}\n",
-      },
-    });
-
-    const modelContext = await loadModel(model, "chat");
-    const sessionId = `${model}-${Date.now()}`;
-
-    // Process messages
-    let systemPrompt = "";
-    for (const msg of messages) {
-      if (msg.role === "system") {
-        systemPrompt = msg.content;
-      }
-    }
-
-    // Create or get existing chat session
-    let session = chatSessions.get(sessionId);
-    if (!session) {
-      // Create a new context and session
-      const context = await modelContext.model.createContext();
-      session = new LlamaChatSession({
-        systemPrompt,
-        contextSequence: context.getSequence(),
-        chatWrapper,
-      });
-      chatSessions.set(sessionId, session);
-      sessionCreationTimes.set(sessionId, Date.now());
-    }
-
-    if (stream) {
-      // Streaming response
-      const encoder = new TextEncoder();
-      const stream = new ReadableStream({
-        async start(controller) {
-          try {
-            let buffer = "";
-            const response = await session!.prompt(
-              messages[messages.length - 1].content,
-              {
-                temperature,
-                maxTokens: max_tokens,
-                onTextChunk(token: string) {
-                  buffer += token;
-                  if (buffer.includes(" ") || buffer.includes("\n")) {
-                    const chunk = {
-                      id: sessionId,
-                      object: "chat.completion.chunk",
-                      created: Date.now(),
-                      model,
-                      choices: [
-                        {
-                          index: 0,
-                          delta: {
-                            content: buffer,
-                          },
-                          finish_reason: null,
-                        },
-                      ],
-                    };
-                    controller.enqueue(
-                      encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`)
-                    );
-                    buffer = "";
-                  }
-                },
-              }
-            );
-
-            // Send any remaining buffer
-            if (buffer) {
-              const chunk = {
-                id: sessionId,
-                object: "chat.completion.chunk",
-                created: Date.now(),
-                model,
-                choices: [
-                  {
-                    index: 0,
-                    delta: {
-                      content: buffer,
-                    },
-                    finish_reason: "stop",
-                  },
-                ],
-              };
-              controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`)
-              );
-            }
-
-            // Send [DONE] message
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            controller.close();
-          } catch (error) {
-            controller.error(error);
-          }
-        },
-      });
-
-      return new Response(stream, {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        },
-      });
-    } else {
-      // Non-streaming response
-      const response = await session.prompt(
-        messages[messages.length - 1].content,
-        {
-          temperature,
-          maxTokens: max_tokens,
-        }
-      );
-
-      return c.json({
-        id: sessionId,
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
+    return c.json(
+      await createChatCompletion({
         model,
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: response,
-            },
-            finish_reason: "stop",
-          },
-        ],
-        usage: {
-          prompt_tokens: -1,
-          completion_tokens: -1,
-          total_tokens: -1,
-        },
-      });
-    }
+        messages,
+        temperature,
+        max_tokens,
+        stream,
+      })
+    );
   } catch (error: unknown) {
     console.error("Error generating chat completion:", error);
     if (
