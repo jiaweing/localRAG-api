@@ -6,7 +6,7 @@ A lightweight API server for Contextual Retrieval-Augmented Generation (RAG) ope
 
 This service provides endpoints for implementing contextual RAG workflows:
 
-1. **In-Memory RAG**: Stateless operations where you provide both documents and chunks in the request
+1. **Stateless RAG**: Stateless operations where you provide both documents and chunks in the request
    - Process documents into chunks and generate embeddings
    - Query against provided chunks with reranking
 2. **Database RAG**: Complete contextual RAG pipeline using PostgreSQL (PgVector)
@@ -23,7 +23,7 @@ This service provides endpoints for implementing contextual RAG workflows:
 - 🔄 Cross-encoder reranking for better relevance
 - 📊 Highly configurable parameters for all operations
 - 🚀 Efficient model management with auto-unloading
-- 💾 Choose between in-memory or database-backed operation
+- 💾 Choose between stateless or database-backed operation
 
 ## Setup
 
@@ -129,7 +129,7 @@ CREATE INDEX folder_id_idx ON dataset (folder_id);
 
 ## API Endpoints
 
-### In-Memory RAG Operations
+### Stateless RAG Operations
 
 #### `POST /v1/chunk`
 
@@ -208,13 +208,14 @@ Response:
 
 #### `POST /v1/store`
 
-Store document chunks with embeddings in the database.
+Store a document in the database. The document will be automatically chunked with context generation.
 
 ```json
 {
   "document": "full document text",
-  "chunks": ["chunk 1", "chunk 2"],
-  "folder_id": "optional-folder-id"
+  "folder_id": "optional-folder-id", // optional
+  "chunkSize": 500, // optional, default: 500
+  "overlap": 50 // optional, default: 50
 }
 ```
 
@@ -385,7 +386,7 @@ Error response format:
 
 ## Examples
 
-### In-Memory RAG with Node.js
+### Stateless RAG with Node.js
 
 ```typescript
 async function searchChunks(text: string, query: string) {
@@ -424,24 +425,48 @@ async function searchChunks(text: string, query: string) {
 }
 ```
 
+### With cURL
+
+```bash
+# Process document into chunks (Stateless RAG)
+curl -X POST http://localhost:57352/v1/chunk \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "your document text",
+    "model": "all-MiniLM-L6-v2.gguf",
+    "generateContexts": true,
+    "chunkSize": 500,
+    "overlap": 50
+  }'
+
+# Search across chunks with reranking (Stateless RAG)
+curl -X POST http://localhost:57352/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "your search query",
+    "chunks": [],
+    "embeddingModel": "all-MiniLM-L6-v2.gguf",
+    "rerankerModel": "bge-reranker-base.gguf",
+    "topK": 4,
+    "shouldRerank": true
+  }'
+```
+
 ### Database-Backed RAG with Node.js
 
 ```typescript
-async function storeAndSearch(
-  document: string,
-  chunks: string[],
-  query: string
-) {
+async function storeAndSearch(document: string, query: string) {
   const API_URL = "http://localhost:57352/v1";
 
-  // 1. Store document chunks in database
+  // 1. Store document in database (it will be automatically chunked)
   const storeResponse = await fetch(`${API_URL}/store`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       document,
-      chunks,
       folder_id: "optional-folder-id", // Optional: for organizing documents
+      chunkSize: 500, // Optional: customize chunk size
+      overlap: 50, // Optional: customize overlap
     }),
   });
   const { file_id, chunks: processedChunks } = await storeResponse.json();
@@ -481,25 +506,17 @@ async function deleteStoredChunks(fileId: string) {
 ### With cURL
 
 ```bash
-# 1. Process document into chunks
-curl -X POST http://localhost:57352/v1/chunk \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "your document text here",
-    "model": "all-MiniLM-L6-v2.gguf",
-    "generateContexts": true
-  }'
-
-# 2. Store chunks in database
+# 1. Store document in database (Database RAG)
 curl -X POST http://localhost:57352/v1/store \
   -H "Content-Type: application/json" \
   -d '{
     "document": "full document text",
-    "chunks": ["chunk 1", "chunk 2"],
-    "folder_id": "optional-folder-id"
+    "folder_id": "optional-folder-id",
+    "chunkSize": 500,
+    "overlap": 50
   }'
 
-# 3. Search stored chunks
+# 2. Search stored chunks
 curl -X POST http://localhost:57352/v1/retrieve \
   -H "Content-Type: application/json" \
   -d '{
@@ -509,7 +526,7 @@ curl -X POST http://localhost:57352/v1/retrieve \
     "threshold": 0.7
   }'
 
-# 4. Delete chunks using file_id
+# 3. Delete chunks using file_id
 curl -X POST http://localhost:57352/v1/delete \
   -H "Content-Type: application/json" \
   -d '{

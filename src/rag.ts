@@ -53,7 +53,7 @@ Please give a short succinct context to situate this chunk within the overall do
 }
 
 // Function to split text into chunks with overlap
-async function splitIntoChunks(
+export async function splitIntoChunks(
   text: string,
   chunkSize = 500,
   overlap = 50,

@@ -23,7 +23,7 @@ app.get("/", (c) => {
   return c.text("Local RAG API Service");
 });
 
-// In-memory RAG endpoints
+// Stateless RAG endpoints
 app.post("/v1/chunk", handleDocumentChunking);
 app.post("/v1/query", handleQueryChunks);
 

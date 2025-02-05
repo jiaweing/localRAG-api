@@ -14,11 +14,11 @@ RUN pnpm install --frozen-lockfile
 # Copy source code
 COPY . .
 
-# Build TypeScript
-RUN pnpm build
-
 ARG PORT=57352
 ENV PORT=$PORT
 EXPOSE $PORT
 
-CMD ["pnpm", "start"]
+# Install tsx globally for development
+RUN npm install -g tsx
+
+CMD ["pnpm", "dev"]

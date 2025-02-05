@@ -28,7 +28,6 @@ services:
     ports:
       - "${PORT:-57352}:${PORT:-57352}"
     volumes:
-      - .:/app
       - /app/node_modules
     depends_on:
       db:

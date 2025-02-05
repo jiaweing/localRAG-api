@@ -5,7 +5,7 @@ import { Context } from "hono";
 import { dataset } from "../db/schema.js";
 import { DATABASE_URL, DEFAULT_CHAT_MODEL } from "./config.js";
 import { getEmbedding } from "./embeddings.js";
-import { generateContext } from "./rag.js";
+import { generateContext, splitIntoChunks } from "./rag.js";
 import { rerankChunks } from "./reranking.js";
 import { Chunk, ChunkWithScore } from "./types.js";
 
@@ -19,24 +19,29 @@ function generateFileId(): string {
 
 export const handleStoreDocument = async (c: Context) => {
   try {
-    const { document, chunks, folder_id } = await c.req.json();
+    const {
+      document,
+      folder_id,
+      chunkSize = 500,
+      overlap = 50,
+    } = await c.req.json();
 
-    if (!document || !chunks || !Array.isArray(chunks)) {
-      return c.json(
-        { error: "Document and valid chunks array are required" },
-        400
-      );
+    if (!document) {
+      return c.json({ error: "Document text is required" }, 400);
     }
 
     // Generate a unique file ID for this document
     const file_id = generateFileId();
 
+    // Split document into chunks with context generation
+    const chunks = await splitIntoChunks(document, chunkSize, overlap, true);
+
     // Generate embeddings and context for each chunk and store in the database
     const processedChunks = await Promise.all(
-      chunks.map(async (chunk: string) => {
-        const contentEmbedding = await getEmbedding(chunk);
+      chunks.map(async (chunk: ChunkWithScore) => {
+        const contentEmbedding = await getEmbedding(chunk.content);
         // Generate context for the chunk using the complete document
-        const chunkContext = await generateContext(chunk, document);
+        const chunkContext = await generateContext(chunk.content, document);
         const contextEmbedding = await getEmbedding(chunkContext);
 
         // Insert into the database
@@ -44,7 +49,7 @@ export const handleStoreDocument = async (c: Context) => {
           const inserted = await tx
             .insert(dataset)
             .values({
-              content: chunk,
+              content: chunk.content,
               content_embedding: contentEmbedding,
               context: chunkContext,
               context_embedding: contextEmbedding,
