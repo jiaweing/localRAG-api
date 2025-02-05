@@ -1,8 +1,8 @@
 import fs from "fs/promises";
 import { getLlama } from "node-llama-cpp";
 import path from "path";
-import { MODEL_DIRS } from "./config";
 import type { ModelContext, ModelType } from "./types";
+import { MODEL_DIRS } from "./types";
 
 // Initialize llama.cpp
 const llama = await getLlama();
@@ -14,7 +14,9 @@ const loadedModels = new Map<string, ModelContext>();
 export async function initializeModelDirectories() {
   await fs.mkdir(path.dirname(MODEL_DIRS.chat), { recursive: true });
   await Promise.all(
-    Object.values(MODEL_DIRS).map((dir) => fs.mkdir(dir, { recursive: true }))
+    Object.entries(MODEL_DIRS).map(([_, dir]) =>
+      fs.mkdir(dir, { recursive: true })
+    )
   );
 }
 

@@ -1,6 +1,5 @@
 import type { Context } from "hono";
 import { loadModel } from "./models";
-import type { RankedResult } from "./types";
 
 import OpenAI from "openai";
 import { DEFAULT_CHAT_MODEL, OPENAI_CONFIG } from "./config";
@@ -16,7 +15,7 @@ if (OPENAI_CONFIG.apiKey) {
 }
 
 // Generate context using either OpenAI or local model
-async function generateContext(
+export async function generateContext(
   chunk: string,
   document: string,
   useOpenAI = false
@@ -46,12 +45,11 @@ Please give a short succinct context to situate this chunk within the overall do
     throw new Error("Chat model not loaded");
   }
 
-  const result = await modelContext.model.complete(prompt, {
-    temperature: 0,
-    maxTokens: 200,
-  });
+  const result = await modelContext.model.createChat([
+    { role: "user", content: prompt },
+  ]);
 
-  return result.choices[0].text.trim();
+  return result.message.content.trim();
 }
 
 // Function to split text into chunks with overlap
@@ -61,17 +59,23 @@ async function splitIntoChunks(
   overlap = 50,
   generateContexts = false,
   useOpenAI = false
-): Promise<Chunk[]> {
-  const chunks: Chunk[] = [];
+): Promise<ChunkWithScore[]> {
+  const chunks: ChunkWithScore[] = [];
   const words = text.split(/\s+/);
 
   for (let i = 0; i < words.length; i += chunkSize - overlap) {
     const chunkWords = words.slice(i, i + chunkSize);
     chunks.push({
       content: chunkWords.join(" "),
+      context: "",
       metadata: {
-        start_idx: i,
-        end_idx: i + chunkWords.length,
+        file_id: "", // Will be set later
+        folder_id: null,
+      },
+      scores: {
+        content: 0,
+        context: 0,
+        combined: 0,
       },
     });
   }
@@ -139,7 +143,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 // Find similar chunks using embeddings with combined scoring
 async function findSimilarChunks(
   queryEmbedding: number[],
-  chunks: Chunk[]
+  chunks: ChunkWithScore[]
 ): Promise<ChunkWithScore[]> {
   return chunks
     .map((chunk) => {
@@ -189,11 +193,10 @@ async function rerankChunks(
     throw new Error("Model is not suitable for reranking");
   }
 
-  const rankedResults: RankedResult[] =
-    await modelContext.rankingContext.rankAndSort(
-      query,
-      chunks.map((chunk) => chunk.content)
-    );
+  const rankedResults = await modelContext.rankingContext.rankAndSort(
+    query,
+    chunks.map((chunk) => chunk.content)
+  );
 
   return rankedResults
     .map((result, idx) => ({
@@ -331,13 +334,11 @@ export async function handleQueryChunks(c: Context) {
     // Convert query embedding to array and find similar chunks
     const similarChunks = await findSimilarChunks(
       [...queryEmbedding.vector],
-      chunks.map(
-        (chunk: { content_embedding: any; context_embedding: any }) => ({
-          ...chunk,
-          content_embedding: chunk.content_embedding,
-          context_embedding: chunk.context_embedding,
-        })
-      )
+      chunks.map((chunk: ChunkWithScore) => ({
+        ...chunk,
+        content_embedding: chunk.content_embedding,
+        context_embedding: chunk.context_embedding,
+      }))
     );
 
     // Rerank if specified

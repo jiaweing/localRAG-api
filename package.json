@@ -1,5 +1,5 @@
 {
-  "name": "localllm-api",
+  "name": "localrag-api",
   "version": "1.0.0",
   "description": "OpenAI-compatible API server for running GGUF models locally",
   "type": "module",
@@ -28,7 +28,6 @@
     "node-llama-cpp": "^3.5.0",
     "openai": "^4.82.0",
     "pg": "^8.13.1"
-    
   },
   "devDependencies": {
     "@types/node": "^20.11.5",

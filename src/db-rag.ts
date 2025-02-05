@@ -5,6 +5,7 @@ import { Context } from "hono";
 import { dataset } from "../db/schema.js";
 import { DATABASE_URL, DEFAULT_CHAT_MODEL } from "./config.js";
 import { getEmbedding } from "./embeddings.js";
+import { generateContext } from "./rag.js";
 import { rerankChunks } from "./reranking.js";
 import { Chunk, ChunkWithScore } from "./types.js";
 
@@ -30,10 +31,13 @@ export const handleStoreDocument = async (c: Context) => {
     // Generate a unique file ID for this document
     const file_id = generateFileId();
 
-    // Generate embeddings for each chunk and store in the database
+    // Generate embeddings and context for each chunk and store in the database
     const processedChunks = await Promise.all(
       chunks.map(async (chunk: string) => {
-        const embedding = await getEmbedding(chunk);
+        const contentEmbedding = await getEmbedding(chunk);
+        // Generate context for the chunk using the complete document
+        const chunkContext = await generateContext(chunk, document);
+        const contextEmbedding = await getEmbedding(chunkContext);
 
         // Insert into the database
         const insertedChunk = await db.transaction(async (tx) => {
@@ -41,9 +45,9 @@ export const handleStoreDocument = async (c: Context) => {
             .insert(dataset)
             .values({
               content: chunk,
-              content_embedding: embedding,
-              context: chunk, // Using chunk as context for now
-              context_embedding: embedding, // Using same embedding for context
+              content_embedding: contentEmbedding,
+              context: chunkContext,
+              context_embedding: contextEmbedding,
               file_id,
               folder_id,
             })
@@ -91,7 +95,13 @@ export const handleStoreDocument = async (c: Context) => {
 
 export const handleSearchChunks = async (c: Context) => {
   try {
-    const { query, folder_id, top_k = 3, threshold = 0.0 } = await c.req.json();
+    const {
+      query,
+      folder_id,
+      top_k = 3,
+      threshold = 0.0,
+      shouldRerank = true,
+    } = await c.req.json();
 
     if (!query) {
       return c.json({ error: "Query is required" }, 400);
@@ -156,15 +166,8 @@ export const handleSearchChunks = async (c: Context) => {
       }))
     );
 
-    // Rerank the similar chunks
-    const rerankedResults = await rerankChunks(
-      query,
-      similarChunks.map((c) => c.content),
-      DEFAULT_CHAT_MODEL
-    );
-
     // Convert to ChunkWithScore type with file and folder IDs
-    const results: ChunkWithScore[] = similarChunks.map((chunk, i) => ({
+    let results: ChunkWithScore[] = similarChunks.map((chunk) => ({
       content: chunk.content,
       context: chunk.context,
       metadata: {
@@ -175,9 +178,26 @@ export const handleSearchChunks = async (c: Context) => {
         content: chunk.content_score,
         context: chunk.context_score,
         combined: chunk.combined_score,
-        reranked: rerankedResults[i]?.score,
       },
     }));
+
+    // Rerank if specified
+    if (shouldRerank) {
+      const rerankedResults = await rerankChunks(
+        query,
+        similarChunks.map((c) => c.content),
+        DEFAULT_CHAT_MODEL
+      );
+
+      // Update scores with reranked values
+      results = results.map((chunk, i) => ({
+        ...chunk,
+        scores: {
+          ...chunk.scores,
+          reranked: rerankedResults[i]?.score,
+        },
+      }));
+    }
 
     return c.json({
       message: "Chunks retrieved successfully",

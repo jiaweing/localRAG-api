@@ -124,7 +124,7 @@ app.get("/v1/models", async (c) => {
   }
 });
 
-console.log(`Local LLM Service is running on http://localhost:${PORT}`);
+console.log(`Local RAG Service is running on http://localhost:${PORT}`);
 
 serve({
   fetch: app.fetch,

@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-export const PORT = process.env.PORT || 23673;
+export const PORT = process.env.PORT || 57352;
 
 // OpenAI Configuration
 export const OPENAI_CONFIG = {

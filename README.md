@@ -56,7 +56,7 @@ OPENAI_API_KEY=your_api_key_here
 OPENAI_MODEL_NAME=gpt-4o-mini # or any other OpenAI model
 
 # Database Configuration
-DATABASE_URL=postgresql://postgres:password@localhost:5432/your_database_name
+DATABASE_URL=postgresql://postgres:password@localhost:5432/rag
 ```
 
 4. Place your GGUF models in the appropriate directories under `models/`:
@@ -69,19 +69,40 @@ localRAG-api/
   │   └── chat/              # Chat models for local context generation
 ```
 
-5. Run the service:
+5. Start the services:
 
-Development mode:
+#### Using Docker (recommended)
+
+```bash
+docker compose up --build
+```
+
+This will start:
+
+- PostgreSQL with pgvector extension at localhost:5432
+- API server at http://localhost:57352 (configurable via PORT environment variable)
+
+#### Manual Development
 
 ```bash
 pnpm dev
 ```
 
-Production mode:
+#### Manual Production
 
 ```bash
 pnpm start
 ```
+
+## Docker Setup
+
+The project includes Docker configuration for easy deployment:
+
+- `docker-compose.yml`: Defines services for PostgreSQL with pgvector and the API server
+- `Dockerfile`: Multi-stage build for the Node.js API service using pnpm
+- `.dockerignore`: Excludes unnecessary files from the Docker build context
+
+Environment variables and database connection will be automatically configured when using Docker.
 
 ## Database Schema
 
@@ -116,8 +137,12 @@ Process document chunks and generate embeddings without persistence.
 
 ```json
 {
-  "document": "doc1",
-  "chunks": ["chunk text 1", "chunk text 2"]
+  "text": "your document text",
+  "model": "embedding-model-name",
+  "chunkSize": 500, // optional, default: 500
+  "overlap": 50, // optional, default: 50
+  "generateContexts": true, // optional, default: false
+  "useOpenAI": false // optional, default: false
 }
 ```
 
@@ -125,19 +150,18 @@ Response:
 
 ```json
 {
-  "message": "Document chunks processed successfully",
   "chunks": [
     {
-      "content": "chunk text 1",
-      "context": "context of this chunk",
+      "content": "chunk text",
+      "context": "generated context",
       "content_embedding": [...],
       "context_embedding": [...],
       "metadata": {
-        "document": "doc1",
-        "timestamp": "2024-02-05T06:15:21.000Z"
+        "file_id": "",
+        "folder_id": null,
+        "has_context": true
       }
-    },
-    // ... more chunks
+    }
   ]
 }
 ```
@@ -149,11 +173,11 @@ Search across provided chunks with optional reranking.
 ```json
 {
   "query": "your search query",
-  "chunks": [
-    // Array of chunks with embeddings from /chunk endpoint
-  ],
-  "top_k": 3, // optional, default: 3
-  "threshold": 0.7 // optional, default: 0.0, similarity threshold between 0 and 1
+  "chunks": [], // Array of chunks with embeddings from /chunk endpoint
+  "embeddingModel": "model-name", // Required: model to use for query embedding
+  "rerankerModel": "model-name", // Optional: model to use for reranking
+  "topK": 4, // Optional: number of results to return
+  "shouldRerank": true // Optional: whether to apply reranking
 }
 ```
 
@@ -161,85 +185,13 @@ Response:
 
 ```json
 {
-  "message": "Chunks retrieved successfully",
   "results": [
     {
-      "content": "most relevant chunk",
-      "context": "context of the chunk",
-      "scores": {
-        "content": 0.95,
-        "context": 0.88,
-        "combined": 0.92,
-        "reranked": 0.96
-      }
-    }
-    // ... more results ordered by relevance
-  ]
-}
-```
-
-### Database-Backed RAG Operations
-
-#### `POST /v1/store`
-
-Store document chunks with embeddings in the database. A unique file_id is automatically generated for each document. Optionally specify a folder_id for organization.
-
-```json
-{
-  "document": "doc1",
-  "folder_id": "optional_folder_id", // optional, for organizing documents
-  "chunks": ["chunk text 1", "chunk text 2"]
-}
-```
-
-Response:
-
-```json
-{
-  "message": "Document chunks processed successfully",
-  "file_id": "generated_unique_file_id",
-  "folder_id": "optional_folder_id", // only if provided in request
-  "chunks": [
-    {
-      "content": "chunk text 1",
-      "context": "context of this chunk",
-      "content_embedding": [...],
-      "context_embedding": [...],
+      "content": "chunk text",
+      "context": "chunk context",
       "metadata": {
-        "document": "doc1",
-        "timestamp": "2024-02-05T06:15:21.000Z"
-      }
-    }
-    // ... more chunks
-  ]
-}
-```
-
-#### `POST /v1/retrieve`
-
-Search across stored chunks using hybrid semantic search with reranking. Optionally filter by folder_id.
-
-```json
-{
-  "query": "your search query",
-  "folder_id": "optional_folder_id", // optional, to search within a specific folder
-  "top_k": 3, // optional, default: 3
-  "threshold": 0.7 // optional, default: 0.0, similarity threshold between 0 and 1
-}
-```
-
-Response:
-
-```json
-{
-  "message": "Chunks retrieved successfully",
-  "results": [
-    {
-      "content": "most relevant chunk",
-      "context": "context for this chunk",
-      "metadata": {
-        "file_id": "file_id_of_chunk",
-        "folder_id": "folder_id_if_any"
+        "file_id": "",
+        "folder_id": null
       },
       "scores": {
         "content": 0.95,
@@ -248,7 +200,79 @@ Response:
         "reranked": 0.96
       }
     }
-    // ... more results ordered by relevance
+  ]
+}
+```
+
+### Database-Backed RAG Operations
+
+#### `POST /v1/store`
+
+Store document chunks with embeddings in the database.
+
+```json
+{
+  "document": "full document text",
+  "chunks": ["chunk 1", "chunk 2"],
+  "folder_id": "optional-folder-id"
+}
+```
+
+Response:
+
+```json
+{
+  "message": "Document chunks processed successfully",
+  "file_id": "generated-file-id",
+  "folder_id": "optional-folder-id",
+  "chunks": [
+    {
+      "content": "chunk text",
+      "context": "generated context",
+      "content_embedding": [...],
+      "context_embedding": [...],
+      "metadata": {
+        "document": "document name/id",
+        "timestamp": "2024-02-05T06:15:21.000Z"
+      }
+    }
+  ]
+}
+```
+
+#### `POST /v1/retrieve`
+
+Search across stored chunks with hybrid semantic search.
+
+```json
+{
+  "query": "your search query",
+  "folder_id": "optional-folder-id",
+  "top_k": 3, // Optional: default is 3
+  "threshold": 0.0 // Optional: similarity threshold 0-1, default is 0.0
+}
+```
+
+Response:
+
+```json
+{
+  "message": "Chunks retrieved successfully",
+  "results": [
+    {
+      "content": "chunk text",
+      "context": "chunk context",
+      "metadata": {
+        "file_id": "file-id",
+        "folder_id": "folder-id"
+      },
+      "scores": {
+        "content": 0.95,
+        "context": 0.88,
+        "combined": 0.92,
+        "reranked": 0.96
+      }
+    }
   ]
 }
 ```
@@ -287,8 +311,16 @@ Pre-load a model into memory.
 
 ```json
 {
-  "model": "all-MiniLM-L6-v2.Q4_K_M",
-  "type": "embedding" // or "reranker" or "chat"
+  "model": "model-name",
+  "type": "embedding | reranker | chat"
+}
+```
+
+Response:
+
+```json
+{
+  "message": "Model loaded successfully"
 }
 ```
 
@@ -298,7 +330,23 @@ Unload a model from memory.
 
 ```json
 {
-  "model": "all-MiniLM-L6-v2.Q4_K_M"
+  "model": "model-name"
+}
+```
+
+Response:
+
+```json
+{
+  "message": "Model unloaded successfully"
+}
+```
+
+or if model not found:
+
+```json
+{
+  "error": "Model not found or not loaded"
 }
 ```
 
@@ -311,14 +359,9 @@ Response:
 ```json
 [
   {
-    "name": "all-MiniLM-L6-v2.Q4_K_M",
-    "type": "embedding",
+    "name": "model-name",
+    "type": "embedding | reranker | chat",
     "loaded": true
-  },
-  {
-    "name": "bge-reranker-v2-m3-Q8_0",
-    "type": "reranker",
-    "loaded": false
   }
 ]
 ```
@@ -345,29 +388,34 @@ Error response format:
 ### In-Memory RAG with Node.js
 
 ```typescript
-async function searchChunks(chunks: string[], query: string) {
-  const API_URL = "http://localhost:3000/v1";
+async function searchChunks(text: string, query: string) {
+  const API_URL = "http://localhost:57352/v1";
 
-  // 1. Process chunks and get embeddings
+  // 1. Process document into chunks and get embeddings
   const chunkResponse = await fetch(`${API_URL}/chunk`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      document: "doc1",
-      chunks: chunks,
+      text,
+      model: "all-MiniLM-L6-v2.gguf",
+      generateContexts: true,
+      chunkSize: 500,
+      overlap: 50,
     }),
   });
   const { chunks: processedChunks } = await chunkResponse.json();
 
-  // 2. Search across chunks
+  // 2. Search across chunks with reranking
   const queryResponse = await fetch(`${API_URL}/query`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       query,
       chunks: processedChunks,
-      top_k: 3,
-      threshold: 0.7, // Only return matches with similarity > 0.7
+      embeddingModel: "all-MiniLM-L6-v2.gguf",
+      rerankerModel: "bge-reranker-base.gguf",
+      topK: 4,
+      shouldRerank: true,
     }),
   });
   const { results } = await queryResponse.json();
@@ -380,23 +428,23 @@ async function searchChunks(chunks: string[], query: string) {
 
 ```typescript
 async function storeAndSearch(
+  document: string,
   chunks: string[],
-  query: string,
-  folderId?: string
+  query: string
 ) {
-  const API_URL = "http://localhost:3000/v1";
+  const API_URL = "http://localhost:57352/v1";
 
-  // 1. Store chunks in database
+  // 1. Store document chunks in database
   const storeResponse = await fetch(`${API_URL}/store`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      document: "doc1",
-      folder_id: folderId, // optional
-      chunks: chunks,
+      document,
+      chunks,
+      folder_id: "optional-folder-id", // Optional: for organizing documents
     }),
   });
-  const { file_id } = await storeResponse.json();
+  const { file_id, chunks: processedChunks } = await storeResponse.json();
 
   // 2. Search across stored chunks
   const queryResponse = await fetch(`${API_URL}/retrieve`, {
@@ -404,9 +452,9 @@ async function storeAndSearch(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       query,
-      folder_id: folderId, // optional, to search within the same folder
+      folder_id: "optional-folder-id", // Optional: search within folder
       top_k: 3,
-      threshold: 0.7,
+      threshold: 0.7, // Only return matches with similarity > 0.7
     }),
   });
   const { results } = await queryResponse.json();
@@ -416,42 +464,53 @@ async function storeAndSearch(
 
 // Example: Delete stored chunks
 async function deleteStoredChunks(fileId: string) {
-  const API_URL = "http://localhost:3000/v1";
+  const API_URL = "http://localhost:57352/v1";
 
-  await fetch(`${API_URL}/delete`, {
+  const response = await fetch(`${API_URL}/delete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       file_id: fileId,
     }),
   });
+  const result = await response.json();
+  console.log(`Deleted chunks for file ${result.file_id}`);
 }
 ```
 
 ### With cURL
 
 ```bash
-# 1. Store chunks with optional folder_id
-curl -X POST http://localhost:3000/v1/store \
+# 1. Process document into chunks
+curl -X POST http://localhost:57352/v1/chunk \
   -H "Content-Type: application/json" \
   -d '{
-    "document": "doc1",
-    "folder_id": "my_folder",
-    "chunks": ["chunk 1", "chunk 2"]
+    "text": "your document text here",
+    "model": "all-MiniLM-L6-v2.gguf",
+    "generateContexts": true
   }'
 
-# 2. Search stored chunks within a folder
-curl -X POST http://localhost:3000/v1/retrieve \
+# 2. Store chunks in database
+curl -X POST http://localhost:57352/v1/store \
+  -H "Content-Type: application/json" \
+  -d '{
+    "document": "full document text",
+    "chunks": ["chunk 1", "chunk 2"],
+    "folder_id": "optional-folder-id"
+  }'
+
+# 3. Search stored chunks
+curl -X POST http://localhost:57352/v1/retrieve \
   -H "Content-Type: application/json" \
   -d '{
     "query": "search query",
-    "folder_id": "my_folder",
+    "folder_id": "optional-folder-id",
     "top_k": 3,
     "threshold": 0.7
   }'
 
-# 3. Delete chunks using file_id
-curl -X POST http://localhost:3000/v1/delete \
+# 4. Delete chunks using file_id
+curl -X POST http://localhost:57352/v1/delete \
   -H "Content-Type: application/json" \
   -d '{
     "file_id": "file_id_from_store_response"
