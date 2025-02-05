@@ -27,6 +27,25 @@ This service provides endpoints for implementing contextual RAG workflows:
 - 🚀 Efficient model management with auto-unloading
 - 💾 Choose between stateless or database-backed operation
 
+## Search Pipeline
+
+The search pipeline consists of two stages:
+
+1. **Initial Retrieval**
+
+   - Generates embedding for the query
+   - Calculates cosine similarity for both content and context embeddings
+   - Combines similarities with weighted average (60% content, 40% context)
+   - Applies similarity threshold (if specified)
+   - Selects top_k most similar chunks
+
+2. **Reranking**
+   - Uses cross-encoder model for more accurate relevance scoring
+   - Reranks the initial candidates
+   - Returns final ordered results
+
+The two-stage approach combines the efficiency of embedding-based retrieval with the accuracy of cross-encoder reranking.
+
 ## Setup
 
 1. Clone and set up:
@@ -65,7 +84,6 @@ EMBEDDING_MODEL=all-MiniLM-L6-v2.Q4_K_M # Model used for database RAG operations
 
 # Database Configuration
 DATABASE_URL=postgresql://postgres:password@localhost:5432/rag
-
 ```
 
 4. Place your GGUF models in the appropriate directories under `models/`:
@@ -76,6 +94,48 @@ localRAG-api/
   │   ├── embedding/          # Embedding models (e.g., all-MiniLM-L6-v2)
   │   ├── reranker/          # Cross-encoder reranking models (e.g., bge-reranker)
   │   └── chat/              # Chat models for local context generation
+```
+
+#### Option 1: Automatic Download
+
+**Windows:**
+
+```batch
+scripts\download-models.bat
+```
+
+**Linux/macOS:**
+
+```bash
+chmod +x scripts/download-models.sh
+./scripts/download-models.sh
+```
+
+#### Option 2: Manual Download
+
+Download the following models and place them in their respective directories:
+
+1. [Llama-3.2-1B-Instruct-Q4_K_M.gguf](https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf)
+
+   - Small instruction-tuned chat model for context generation (`models/chat/`)
+
+2. [all-MiniLM-L6-v2.Q4_K_M.gguf](https://huggingface.co/leliuga/all-MiniLM-L6-v2-GGUF/resolve/main/all-MiniLM-L6-v2.Q4_K_M.gguf)
+
+   - Efficient text embedding model for semantic search (`models/embedding/`)
+
+3. [bge-reranker-v2-m3-q8_0.gguf](https://huggingface.co/klnstpr/bge-reranker-v2-m3-Q8_0-GGUF/resolve/main/bge-reranker-v2-m3-q8_0.gguf)
+   - Cross-encoder model for accurate result reranking (`models/reranker/`)
+
+Expected directory structure after download:
+
+```
+models/
+├── chat/
+│   └── Llama-3.2-1B-Instruct-Q4_K_M.gguf
+├── embedding/
+│   └── all-MiniLM-L6-v2.Q4_K_M.gguf
+└── reranker/
+    └── bge-reranker-v2-m3-q8_0.gguf
 ```
 
 5. Start the services:
@@ -298,19 +358,15 @@ The search uses a hybrid approach combining both content and context similarity:
 
 #### `GET /v1/documents`
 
-List stored documents with paginated results. Provides document previews with their first chunks and supports filtering by folder or file ID.
+List stored documents with paginated results. Provides document previews with their first chunks.
 
-Query Parameters:
-
-- `page`: Page number (Optional, default: 1)
-- `pageSize`: Items per page (Optional, default: 10, max: 100)
-- `folder_id`: Filter by folder (Optional)
-- `file_id`: Filter by file (Optional)
-
-Example Request:
-
-```
-GET /v1/documents?page=2&pageSize=20&folder_id=folder123
+```json
+{
+  "page": 1, // Optional: default is 1
+  "pageSize": 10, // Optional: default is 10, max is 100
+  "folder_id": "optional-folder-id", // Optional: filter by folder
+  "file_id": "optional-file-id" // Optional: filter by file
+}
 ```
 
 Response:
@@ -335,12 +391,10 @@ Response:
 }
 ```
 
-The endpoint returns a paginated list of documents, with each document containing:
+Response fields:
 
-- `file_id`: Unique identifier for the document
-- `folder_id`: Optional folder grouping
-- `content_preview`: First chunk of the document content
-- `context_preview`: Associated context for the first chunk
+- `data`: Array of documents with previews and metadata
+- `pagination`: Information about current page and total results
 
 #### `POST /v1/delete`
 
@@ -597,22 +651,3 @@ curl -X POST http://localhost:57352/v1/delete \
     "file_id": "file_id_from_store_response"
   }'
 ```
-
-## Search Pipeline
-
-The search pipeline consists of two stages:
-
-1. **Initial Retrieval**
-
-   - Generates embedding for the query
-   - Calculates cosine similarity for both content and context embeddings
-   - Combines similarities with weighted average (60% content, 40% context)
-   - Applies similarity threshold (if specified)
-   - Selects top_k most similar chunks
-
-2. **Reranking**
-   - Uses cross-encoder model for more accurate relevance scoring
-   - Reranks the initial candidates
-   - Returns final ordered results
-
-The two-stage approach combines the efficiency of embedding-based retrieval with the accuracy of cross-encoder reranking.
