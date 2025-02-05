@@ -1,6 +1,87 @@
 # Local Contextual RAG API Server
 
-[Previous content remains the same until Database Schema section]
+A lightweight API server for Contextual Retrieval-Augmented Generation (RAG) operations, supporting document chunking with context generation, multi-embedding semantic search, and reranking.
+
+## Overview
+
+This service provides endpoints for implementing contextual RAG workflows:
+
+1. **In-Memory RAG**: Stateless operations where you provide both documents and chunks in the request
+   - Process documents into chunks and generate embeddings
+   - Query against provided chunks with reranking
+2. **Database RAG**: Complete contextual RAG pipeline using PostgreSQL (PgVector)
+   - Document chunking with context-awareness
+   - Hybrid semantic search with context embeddings
+   - Flexible context generation using OpenAI or local models
+
+## Features
+
+- 🔍 Text chunking with configurable size and overlap
+- 🧠 Optional context generation using OpenAI or local models
+- 📈 Dual embeddings support for context-aware search
+- 🎯 Hybrid semantic search with configurable weights
+- 🔄 Cross-encoder reranking for better relevance
+- 📊 Highly configurable parameters for all operations
+- 🚀 Efficient model management with auto-unloading
+- 💾 Choose between in-memory or database-backed operation
+
+## Setup
+
+1. Clone and set up:
+
+```bash
+git clone https://github.com/jiaweing/localRAG-api.git
+cd localRAG-api
+pnpm install
+```
+
+2. Set up PostgreSQL database:
+
+   - Install PostgreSQL if not already installed
+   - Create a new database for the application
+   - Run migrations with drizzle-kit (coming soon)
+   - Configure database connection in `.env` file
+
+3. Configure environment variables:
+
+```bash
+cp .env.example .env
+```
+
+Required environment variables:
+
+```bash
+# OpenAI Configuration (optional)
+OPENAI_API_KEY=your_api_key_here
+OPENAI_MODEL_NAME=gpt-4o-mini # or any other OpenAI model
+
+# Database Configuration
+DATABASE_URL=postgresql://postgres:password@localhost:5432/your_database_name
+```
+
+4. Place your GGUF models in the appropriate directories under `models/`:
+
+```
+localRAG-api/
+  ├── models/
+  │   ├── embedding/          # Embedding models (e.g., all-MiniLM-L6-v2)
+  │   ├── reranker/          # Cross-encoder reranking models (e.g., bge-reranker)
+  │   └── chat/              # Chat models for local context generation
+```
+
+5. Run the service:
+
+Development mode:
+
+```bash
+pnpm dev
+```
+
+Production mode:
+
+```bash
+pnpm start
+```
 
 ## Database Schema
 
@@ -27,7 +108,75 @@ CREATE INDEX folder_id_idx ON dataset (folder_id);
 
 ## API Endpoints
 
-[Previous In-Memory RAG Operations section remains the same]
+### In-Memory RAG Operations
+
+#### `POST /v1/chunk`
+
+Process document chunks and generate embeddings without persistence.
+
+```json
+{
+  "document": "doc1",
+  "chunks": ["chunk text 1", "chunk text 2"]
+}
+```
+
+Response:
+
+```json
+{
+  "message": "Document chunks processed successfully",
+  "chunks": [
+    {
+      "content": "chunk text 1",
+      "context": "context of this chunk",
+      "content_embedding": [...],
+      "context_embedding": [...],
+      "metadata": {
+        "document": "doc1",
+        "timestamp": "2024-02-05T06:15:21.000Z"
+      }
+    },
+    // ... more chunks
+  ]
+}
+```
+
+#### `POST /v1/query`
+
+Search across provided chunks with optional reranking.
+
+```json
+{
+  "query": "your search query",
+  "chunks": [
+    // Array of chunks with embeddings from /chunk endpoint
+  ],
+  "top_k": 3, // optional, default: 3
+  "threshold": 0.7 // optional, default: 0.0, similarity threshold between 0 and 1
+}
+```
+
+Response:
+
+```json
+{
+  "message": "Chunks retrieved successfully",
+  "results": [
+    {
+      "content": "most relevant chunk",
+      "context": "context of the chunk",
+      "scores": {
+        "content": 0.95,
+        "context": 0.88,
+        "combined": 0.92,
+        "reranked": 0.96
+      }
+    }
+    // ... more results ordered by relevance
+  ]
+}
+```
 
 ### Database-Backed RAG Operations
 
@@ -130,7 +279,102 @@ Response:
 }
 ```
 
-[Rest of the documentation remains the same]
+### Model Management
+
+#### `POST /v1/models/load`
+
+Pre-load a model into memory.
+
+```json
+{
+  "model": "all-MiniLM-L6-v2.Q4_K_M",
+  "type": "embedding" // or "reranker" or "chat"
+}
+```
+
+#### `POST /v1/models/unload`
+
+Unload a model from memory.
+
+```json
+{
+  "model": "all-MiniLM-L6-v2.Q4_K_M"
+}
+```
+
+#### `GET /v1/models`
+
+List all available models.
+
+Response:
+
+```json
+[
+  {
+    "name": "all-MiniLM-L6-v2.Q4_K_M",
+    "type": "embedding",
+    "loaded": true
+  },
+  {
+    "name": "bge-reranker-v2-m3-Q8_0",
+    "type": "reranker",
+    "loaded": false
+  }
+]
+```
+
+## Error Handling
+
+All endpoints return appropriate HTTP status codes:
+
+- 200: Success
+- 400: Bad Request (missing/invalid parameters)
+- 404: Not Found (model not found)
+- 500: Internal Server Error
+
+Error response format:
+
+```json
+{
+  "error": "Error description"
+}
+```
+
+## Examples
+
+### In-Memory RAG with Node.js
+
+```typescript
+async function searchChunks(chunks: string[], query: string) {
+  const API_URL = "http://localhost:3000/v1";
+
+  // 1. Process chunks and get embeddings
+  const chunkResponse = await fetch(`${API_URL}/chunk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      document: "doc1",
+      chunks: chunks,
+    }),
+  });
+  const { chunks: processedChunks } = await chunkResponse.json();
+
+  // 2. Search across chunks
+  const queryResponse = await fetch(`${API_URL}/query`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query,
+      chunks: processedChunks,
+      top_k: 3,
+      threshold: 0.7, // Only return matches with similarity > 0.7
+    }),
+  });
+  const { results } = await queryResponse.json();
+
+  return results;
+}
+```
 
 ### Database-Backed RAG with Node.js
 
@@ -214,4 +458,21 @@ curl -X POST http://localhost:3000/v1/delete \
   }'
 ```
 
-[Rest of the documentation remains the same]
+## Search Pipeline
+
+The search pipeline consists of two stages:
+
+1. **Initial Retrieval**
+
+   - Generates embedding for the query
+   - Calculates cosine similarity for both content and context embeddings
+   - Combines similarities with weighted average (60% content, 40% context)
+   - Applies similarity threshold (if specified)
+   - Selects top_k most similar chunks
+
+2. **Reranking**
+   - Uses cross-encoder model for more accurate relevance scoring
+   - Reranks the initial candidates
+   - Returns final ordered results
+
+The two-stage approach combines the efficiency of embedding-based retrieval with the accuracy of cross-encoder reranking.
