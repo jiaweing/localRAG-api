@@ -1,3 +1,6 @@
+> [!WARNING]
+> **This repository is archived and no longer maintained.** It has been superseded by [layer0](https://github.com/amajorai/layer0) — a self-hostable RAG and long-term memory server with vector embeddings, knowledge graph, hybrid search, and local LLM support. Use layer0 instead.
+
 # Local Contextual RAG API Server
 
 A lightweight & fully customizable API server for Contextual Retrieval-Augmented Generation (RAG) operations, supporting document chunking with context generation, multi-embedding semantic search, and reranking.
